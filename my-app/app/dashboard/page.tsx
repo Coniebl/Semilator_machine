@@ -62,20 +62,13 @@ function DashboardContent() {
 
   useEffect(() => {
     const fetchProfiles = async () => {
-      if (sellerId && sellerId !== 'sim-seller') {
+      if (sellerId) {
         const { data } = await supabase.from('profiles').select('username').eq('id', sellerId).single();
         if (data) setSellerName(data.username || 'Seller1');
       }
-      if (buyerId && buyerId !== 'sim-buyer') {
+      if (buyerId) {
          const { data } = await supabase.from('profiles').select('username').eq('id', buyerId).single();
          if (data) setBuyerName(data.username || 'Buyer1');
-      } else {
-         if (!sellerId && !buyerId) {
-            setSellerName('Seller1');
-            setBuyerName('Buyer1');
-         } else if (buyerId === 'sim-buyer' || !buyerId) {
-            setBuyerName('Anonymous');
-         }
       }
     };
     fetchProfiles();
@@ -120,6 +113,15 @@ function DashboardContent() {
         .order('created_at', { ascending: false });
       
       if (data) {
+        const userIds = [...new Set(data.map(t => t.buyer_id).filter(Boolean))];
+        let profilesMap: Record<string, string> = {};
+        if (userIds.length > 0) {
+          const { data: profiles } = await supabase.from('profiles').select('id, username').in('id', userIds);
+          if (profiles) {
+            profiles.forEach(p => { profilesMap[p.id] = p.username || 'Buyer'; });
+          }
+        }
+
         const mapped = data.map(item => {
           const d = new Date(item.created_at);
           const mm = String(d.getMonth() + 1).padStart(2, '0');
@@ -127,19 +129,64 @@ function DashboardContent() {
           const yyyy = d.getFullYear();
           const HH = String(d.getHours()).padStart(2, '0');
           const min = String(d.getMinutes()).padStart(2, '0');
+          
+          let itemBuyerName = 'Buyer';
+          if (item.buyer_id) {
+            itemBuyerName = profilesMap[item.buyer_id] || 'Buyer';
+          }
+
           return {
             id: item.id,
-            count: item.count,
-            amount: item.amount,
+            count: item.quantity,
+            amount: item.total_price,
             date: `${mm}/${dd}/${yyyy} ${HH}:${min}`,
-            buyerName: buyerName
+            buyerName: itemBuyerName
           };
         });
-        setHistory(mapped);
+
+        // Merge with any local simulation transactions
+        const localHistoryStr = localStorage.getItem('sim_transactions_history');
+        if (localHistoryStr) {
+          try {
+            const localHistory = JSON.parse(localHistoryStr);
+            // Only keep local history from today
+            const todayLocal = localHistory.filter((item: any) => {
+              const itemDate = new Date(item.rawDate);
+              return itemDate >= startOfToday;
+            });
+            
+            // Combine and sort by date descending
+            const combined = [...mapped, ...todayLocal].sort((a, b) => {
+              return new Date(b.rawDate || b.date).getTime() - new Date(a.rawDate || a.date).getTime();
+            });
+            setHistory(combined);
+            // Clean up old local history
+            localStorage.setItem('sim_transactions_history', JSON.stringify(todayLocal));
+          } catch (e) {
+            setHistory(mapped);
+          }
+        } else {
+          setHistory(mapped);
+        }
+      } else {
+        // Fallback to local history if Supabase fails entirely
+        const localHistoryStr = localStorage.getItem('sim_transactions_history');
+        if (localHistoryStr) {
+          try {
+            const localHistory = JSON.parse(localHistoryStr);
+            const todayLocal = localHistory.filter((item: any) => {
+              const itemDate = new Date(item.rawDate);
+              return itemDate >= startOfToday;
+            });
+            setHistory(todayLocal.sort((a: any, b: any) => new Date(b.rawDate).getTime() - new Date(a.rawDate).getTime()));
+          } catch (e) {
+            setHistory([]);
+          }
+        }
       }
     };
     fetchHistory();
-  }, [buyerName]);
+  }, []);
 
   useEffect(() => {
     let interval: NodeJS.Timeout;
@@ -207,32 +254,54 @@ function DashboardContent() {
 
             const finalTotal = finalVerified * pricePerPiece;
 
-            const validUserId = (sellerId && String(sellerId).length === 36) ? sellerId : '00000000-0000-0000-0000-000000000000';
+            let validBuyerId = (buyerId && String(buyerId).length === 36) ? buyerId : 'f1296eb7-7af1-47de-9d2e-3c836f645b80';
+            let validSellerId = (sellerId && String(sellerId).length === 36) ? sellerId : 'd6732e21-e322-438d-8c4b-3a5afe249e22';
 
-            supabase.from('transactions').insert({
-              user_id: validUserId,
+            const now = new Date();
+            const mm = String(now.getMonth() + 1).padStart(2, '0');
+            const dd = String(now.getDate()).padStart(2, '0');
+            const yyyy = now.getFullYear();
+            const HH = String(now.getHours()).padStart(2, '0');
+            const min = String(now.getMinutes()).padStart(2, '0');
+            const dateStr = `${mm}/${dd}/${yyyy} ${HH}:${min}`;
+            
+            // Always update local history immediately for a smooth demo
+            const newTransaction = {
+              id: 'temp-' + Date.now(),
               count: finalVerified,
-              amount: finalTotal
-            }).select().single().then(({ data, error }) => {
+              amount: finalTotal,
+              date: dateStr,
+              rawDate: now.toISOString(),
+              buyerName: buyerName
+            };
+            
+            setHistory(h => {
+              const updated = [newTransaction, ...h];
+              // Save to localStorage so they don't disappear on navigation
+              localStorage.setItem('sim_transactions_history', JSON.stringify(updated.filter(item => item.id.startsWith('temp-'))));
+              return updated;
+            });
+
+            // Attempt to save to Supabase in the background
+            supabase.from('transactions').insert({
+              buyer_id: validBuyerId,
+              seller_id: validSellerId,
+              quantity: finalVerified,
+              total_price: finalTotal
+            }).select('id').single().then(({ data, error }) => {
               if (error) {
-                console.error("Supabase insert error:", error);
-              }
-              if (data) {
-                const now = new Date(data.created_at);
-                const mm = String(now.getMonth() + 1).padStart(2, '0');
-                const dd = String(now.getDate()).padStart(2, '0');
-                const yyyy = now.getFullYear();
-                const HH = String(now.getHours()).padStart(2, '0');
-                const min = String(now.getMinutes()).padStart(2, '0');
-                const dateStr = `${mm}/${dd}/${yyyy} ${HH}:${min}`;
-                
-                setHistory(h => [{
-                  id: data.id,
-                  count: data.count,
-                  amount: data.amount,
-                  date: dateStr,
-                  buyerName: buyerName
-                }, ...h]);
+                console.warn("Supabase insert error:", error.message);
+                alert("Database Error: " + error.message);
+              } else if (data) {
+                // Remove from local history to avoid duplicates on next page load
+                const localStr = localStorage.getItem('sim_transactions_history');
+                if (localStr) {
+                  try {
+                    let localHistory = JSON.parse(localStr);
+                    localHistory = localHistory.filter((item: any) => item.id !== newTransaction.id);
+                    localStorage.setItem('sim_transactions_history', JSON.stringify(localHistory));
+                  } catch(e) {}
+                }
               }
             });
             }
@@ -263,12 +332,22 @@ function DashboardContent() {
   };
 
   const handleDone = () => {
+    // Return to the landing page for the next customer
     router.replace('/');
   };
 
   const handleDeleteHistory = async (id: string) => {
-    await supabase.from('transactions').delete().eq('id', id);
-    setHistory(prev => prev.filter(item => item.id !== id));
+    if (id.startsWith('temp-')) {
+      // It's a local simulation transaction
+      setHistory(prev => {
+        const updated = prev.filter(item => item.id !== id);
+        localStorage.setItem('sim_transactions_history', JSON.stringify(updated.filter(item => item.id.startsWith('temp-'))));
+        return updated;
+      });
+    } else {
+      await supabase.from('transactions').delete().eq('id', id);
+      setHistory(prev => prev.filter(item => item.id !== id));
+    }
   };
 
   return (
@@ -385,7 +464,7 @@ function DashboardContent() {
 
           {/* History Panel */}
           <div className="bg-[#8C8885] rounded-xl p-5 flex flex-col flex-1 overflow-hidden">
-            <h2 className="font-bold text-white text-2xl mb-4">TRANSACTION HISTORY</h2>
+            <h2 className="font-bold text-white text-2xl mb-4">DAILY TRANSACTION HISTORY</h2>
             <div className="flex-1 overflow-y-auto no-scrollbar pr-2">
               {history.map((item, index) => (
                 <div key={item.id} className="group relative flex flex-row bg-[#E8E8E8] rounded-lg mb-3 overflow-hidden items-center py-3">
