@@ -13,7 +13,7 @@ const generateCode = () => {
   return result;
 };
 
-const ConnectionCircle = ({ label, isActive }: { label: string; isActive: boolean }) => {
+const ConnectionPopup = ({ isActive }: { isActive: boolean }) => {
   const [status, setStatus] = useState<'idle' | 'loading' | 'success'>('idle');
 
   useEffect(() => {
@@ -21,25 +21,34 @@ const ConnectionCircle = ({ label, isActive }: { label: string; isActive: boolea
       setStatus('loading');
       setTimeout(() => {
         setStatus('success');
-      }, 1000);
+      }, 1200);
     }
   }, [isActive, status]);
 
+  if (!isActive) return null;
+
   return (
-    <div className={`w-28 h-28 rounded-full border-[6px] flex items-center justify-center transition-all duration-300 ease-in-out ${
-      status === 'success' 
-        ? 'border-[#10B981] bg-[#10B981] scale-110' 
-        : status === 'loading'
-        ? 'border-[#D9D9D9] border-t-[#10B981] border-r-[#10B981] animate-spin'
-        : 'border-[#D9D9D9] bg-white'
-    }`}>
-      {status === 'success' ? (
-         <span className="font-roboto font-bold text-5xl text-white">✔</span>
-      ) : (
-         <span className={`font-roboto font-bold text-5xl text-black ${status === 'loading' ? 'animate-[spin_1s_linear_infinite_reverse]' : ''}`}>
-           {label}
-         </span>
-      )}
+    <div className="absolute inset-0 bg-black/40 flex items-center justify-center z-50 backdrop-blur-sm transition-opacity duration-300">
+      <div className="bg-white p-10 rounded-2xl shadow-2xl flex flex-col items-center gap-6 animate-in fade-in zoom-in duration-300">
+        <div className={`w-32 h-32 rounded-full border-[8px] flex items-center justify-center transition-all duration-300 ease-in-out ${
+          status === 'success' 
+            ? 'border-[#10B981] bg-[#10B981] scale-110' 
+            : status === 'loading'
+            ? 'border-[#D9D9D9] border-t-[#10B981] border-r-[#10B981] animate-spin'
+            : 'border-[#D9D9D9] bg-white'
+        }`}>
+          {status === 'success' ? (
+             <span className="font-roboto font-bold text-7xl text-white">✔</span>
+          ) : (
+             <span className={`font-roboto font-bold text-5xl text-black ${status === 'loading' ? 'animate-[spin_1s_linear_infinite_reverse]' : ''}`}>
+               B
+             </span>
+          )}
+        </div>
+        <h3 className="font-roboto font-bold text-2xl text-black">
+          {status === 'success' ? 'Buyer Connected!' : 'Connecting Buyer...'}
+        </h3>
+      </div>
     </div>
   );
 };
@@ -55,33 +64,49 @@ export default function PairingScreen() {
     let code: string;
 
     const initPairing = async () => {
+      const storedSellerId = localStorage.getItem("linkedSellerId");
+      const isValidUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(storedSellerId || '');
+      
+      if (!storedSellerId || !isValidUUID) {
+        if (!isValidUUID && storedSellerId) {
+          localStorage.removeItem("linkedSellerId");
+        }
+        // If no valid seller is linked, go back to landing page
+        router.replace("/");
+        return;
+      }
+      setSellerId(storedSellerId);
+
       code = generateCode();
       setPairingCode(code);
 
-      const { error } = await supabase.from('pairing_sessions').insert({ code, status: 'pending' });
+      // Pre-fill seller_id since the machine is already linked
+      const { error } = await supabase.from('pairing_sessions').insert({ 
+        code, 
+        status: 'pending',
+        seller_id: storedSellerId 
+      });
       if (error) {
-        console.error("Failed to create pairing session:", error);
+        console.warn("Failed to create pairing session:", error.message);
+        alert("Database Error (pairing_sessions): " + error.message);
       }
 
       channel = supabase
         .channel(`pairing_${code}`)
         .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'pairing_sessions', filter: `code=eq.${code}` }, (payload) => {
-          const { seller_id, buyer_id, paired_user_id } = payload.new;
+          const { buyer_id, paired_user_id } = payload.new;
           
-          let currentSellerId = seller_id;
           let currentBuyerId = buyer_id;
 
           if (paired_user_id && !currentBuyerId) {
             currentBuyerId = paired_user_id;
           }
           
-          if (currentSellerId) setSellerId(currentSellerId);
-          if (currentBuyerId) setBuyerId(currentBuyerId);
-          
-          if (currentSellerId && currentBuyerId) {
+          if (currentBuyerId && !buyerId) {
+             setBuyerId(currentBuyerId);
              setTimeout(() => {
-               router.replace(`/dashboard?sellerId=${currentSellerId}&buyerId=${currentBuyerId}`);
-             }, 2000);
+               router.replace(`/dashboard?sellerId=${storedSellerId}&buyerId=${currentBuyerId}`);
+             }, 2500);
           }
         })
         .subscribe();
@@ -92,40 +117,49 @@ export default function PairingScreen() {
     return () => {
       if (channel) supabase.removeChannel(channel);
     };
-  }, [router]);
+  }, [router, buyerId]);
 
-  const handleProceedWithoutBuyer = (e: React.MouseEvent) => {
-    e.stopPropagation();
-    if (sellerId) {
-      router.replace(`/dashboard?sellerId=${sellerId}`);
-    }
-  };
-
-  const handleScreenTap = () => {
-    if (!sellerId && !buyerId) {
-      setSellerId('sim-seller');
-      setBuyerId('sim-buyer');
+  const handleSimulation = () => {
+    if (sellerId && !buyerId) {
+      // Toggle between Buyer1 and Buyer2
+      const lastBuyer = localStorage.getItem('last_sim_buyer');
+      const isNextBuyer2 = lastBuyer === 'Buyer1';
+      
+      // Real Buyer UUIDs from Supabase Authentication
+      const simBuyerId = isNextBuyer2 
+        ? 'e817827a-13be-46da-aeed-8dd8860dc992' // buyer2
+        : 'f1296eb7-7af1-47de-9d2e-3c836f645b80'; // buyer1
+      const simBuyerName = isNextBuyer2 ? 'Buyer2' : 'Buyer1';
+      
+      localStorage.setItem('last_sim_buyer', simBuyerName);
+      
+      // Guarantee the user exists in the profiles table to satisfy foreign keys
+      supabase.from('profiles').upsert({ id: simBuyerId, username: simBuyerName }).then(({ error }) => {
+        if (error) console.error("Profiles Upsert Error:", error.message);
+      });
+      
+      // Update pairing_sessions to reflect the simulation in the database
+      supabase.from('pairing_sessions').update({ buyer_id: simBuyerId, paired_user_id: simBuyerId, status: 'paired' }).eq('code', pairingCode).then(({ error }) => {
+        if (error) console.error("Pairing Sessions Update Error:", error.message);
+      });
+      
+      setBuyerId(simBuyerId);
       setTimeout(() => {
-        router.replace('/dashboard');
-      }, 2000);
+        router.replace(`/dashboard?sellerId=${sellerId}&buyerId=${simBuyerId}`);
+      }, 2500);
     }
   };
 
   const codeDisplay = pairingCode.split('').join(' ');
 
   return (
-    <div 
-      className="w-full h-full bg-white flex flex-col items-center justify-center p-8 gap-12 cursor-pointer select-none"
-      onClick={handleScreenTap}
-    >
+    <div className="w-full h-full bg-white flex flex-col items-center justify-center p-8 gap-12 select-none relative">
       <div className="flex flex-col items-center gap-4">
-        <h1 className="font-roboto font-bold text-[64px] text-black">Scan QR Code</h1>
-        <h2 className="font-roboto font-bold text-3xl text-[#3b7597]">Use your phone to link the Semilator</h2>
+        <h1 className="font-roboto font-bold text-[64px] text-black">Buyer Scan QR Code</h1>
+        <h2 className="font-roboto font-bold text-3xl text-[#3b7597]">Connect your phone to start the transaction</h2>
       </div>
 
       <div className="flex flex-row items-center justify-center gap-16">
-        <ConnectionCircle label="S" isActive={!!sellerId} />
-        
         <div className="p-6 bg-white flex items-center justify-center shadow-sm rounded-xl">
           <QRCode
             value={pairingCode}
@@ -133,24 +167,35 @@ export default function PairingScreen() {
             level="L"
           />
         </div>
-
-        <ConnectionCircle label="B" isActive={!!buyerId} />
       </div>
 
-      <div className="bg-white border-4 border-[#D9D9D9] py-4 px-10 rounded-xl min-w-[380px] flex items-center justify-center">
-        <span className="font-roboto font-bold text-5xl text-black tracking-[0.25em]">
-          {codeDisplay}
-        </span>
+      <div className="flex flex-col items-center gap-4">
+        <div className="bg-[#f0f0f0] border-[3px] border-[#d9d9d9] py-4 px-10 rounded-xl min-w-[380px] flex items-center justify-center shadow-sm">
+          <span className="font-roboto font-bold text-5xl text-black tracking-[0.3em]">
+            {codeDisplay}
+          </span>
+        </div>
+        
+        <div className="flex gap-4 mt-4">
+          <button 
+            onClick={handleSimulation}
+            className="px-6 py-2 bg-gray-200 text-gray-700 font-bold rounded-full hover:bg-gray-300 transition-colors"
+          >
+            Simulate (Test Mode)
+          </button>
+          <button 
+            onClick={() => {
+              localStorage.removeItem("linkedSellerId");
+              router.replace("/link-device");
+            }}
+            className="px-6 py-2 bg-red-100 text-red-600 font-bold rounded-full hover:bg-red-200 transition-colors"
+          >
+            Unlink (Test Mode)
+          </button>
+        </div>
       </div>
 
-      {sellerId && !buyerId && (
-        <button 
-          className="bg-[#3b7597] py-3 px-6 rounded-lg absolute bottom-6 right-6 font-roboto font-bold text-white text-lg hover:bg-[#2c5871] transition-colors"
-          onClick={handleProceedWithoutBuyer}
-        >
-          Proceed without Buyer
-        </button>
-      )}
+      <ConnectionPopup isActive={!!buyerId} />
     </div>
   );
 }
