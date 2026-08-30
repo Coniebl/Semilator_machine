@@ -62,6 +62,21 @@ export default function PairingScreen() {
   useEffect(() => {
     let channel: any;
     let code: string;
+    let pollInterval: NodeJS.Timeout;
+
+    const checkUnlinkStatus = async (currentMachineId: string) => {
+      const { data, error } = await supabase
+        .from('machines')
+        .select('seller_id')
+        .eq('machine_id', currentMachineId)
+        .maybeSingle();
+
+      if (!data && !error) {
+         // Machine record was deleted!
+         localStorage.removeItem("linkedSellerId");
+         router.replace("/link-device");
+      }
+    };
 
     const initPairing = async () => {
       const storedSellerId = localStorage.getItem("linkedSellerId");
@@ -76,6 +91,21 @@ export default function PairingScreen() {
         return;
       }
       setSellerId(storedSellerId);
+
+      // Listen for unlinking
+      const machineId = localStorage.getItem("machine_id");
+      if (machineId) {
+        checkUnlinkStatus(machineId);
+        pollInterval = setInterval(() => checkUnlinkStatus(machineId), 5000);
+
+        supabase
+          .channel(`machine_unlink_${machineId}`)
+          .on('postgres_changes', { event: 'DELETE', schema: 'public', table: 'machines', filter: `machine_id=eq.${machineId}` }, () => {
+            localStorage.removeItem("linkedSellerId");
+            router.replace("/link-device");
+          })
+          .subscribe();
+      }
 
       code = generateCode();
       setPairingCode(code);
@@ -116,39 +146,13 @@ export default function PairingScreen() {
 
     return () => {
       if (channel) supabase.removeChannel(channel);
+      if (pollInterval) clearInterval(pollInterval);
+      const machineId = localStorage.getItem("machine_id");
+      if (machineId) {
+         supabase.removeChannel(supabase.channel(`machine_unlink_${machineId}`));
+      }
     };
   }, [router, buyerId]);
-
-  const handleSimulation = () => {
-    if (sellerId && !buyerId) {
-      // Toggle between Buyer1 and Buyer2
-      const lastBuyer = localStorage.getItem('last_sim_buyer');
-      const isNextBuyer2 = lastBuyer === 'Buyer1';
-      
-      // Real Buyer UUIDs from Supabase Authentication
-      const simBuyerId = isNextBuyer2 
-        ? 'e817827a-13be-46da-aeed-8dd8860dc992' // buyer2
-        : 'f1296eb7-7af1-47de-9d2e-3c836f645b80'; // buyer1
-      const simBuyerName = isNextBuyer2 ? 'Buyer2' : 'Buyer1';
-      
-      localStorage.setItem('last_sim_buyer', simBuyerName);
-      
-      // Guarantee the user exists in the profiles table to satisfy foreign keys
-      supabase.from('profiles').upsert({ id: simBuyerId, username: simBuyerName }).then(({ error }) => {
-        if (error) console.error("Profiles Upsert Error:", error.message);
-      });
-      
-      // Update pairing_sessions to reflect the simulation in the database
-      supabase.from('pairing_sessions').update({ buyer_id: simBuyerId, paired_user_id: simBuyerId, status: 'paired' }).eq('code', pairingCode).then(({ error }) => {
-        if (error) console.error("Pairing Sessions Update Error:", error.message);
-      });
-      
-      setBuyerId(simBuyerId);
-      setTimeout(() => {
-        router.replace(`/dashboard?sellerId=${sellerId}&buyerId=${simBuyerId}`);
-      }, 2500);
-    }
-  };
 
   const codeDisplay = pairingCode.split('').join(' ');
 
@@ -174,24 +178,6 @@ export default function PairingScreen() {
           <span className="font-roboto font-bold text-5xl text-black tracking-[0.3em]">
             {codeDisplay}
           </span>
-        </div>
-        
-        <div className="flex gap-4 mt-4">
-          <button 
-            onClick={handleSimulation}
-            className="px-6 py-2 bg-gray-200 text-gray-700 font-bold rounded-full hover:bg-gray-300 transition-colors"
-          >
-            Simulate (Test Mode)
-          </button>
-          <button 
-            onClick={() => {
-              localStorage.removeItem("linkedSellerId");
-              router.replace("/link-device");
-            }}
-            className="px-6 py-2 bg-red-100 text-red-600 font-bold rounded-full hover:bg-red-200 transition-colors"
-          >
-            Unlink (Test Mode)
-          </button>
         </div>
       </div>
 
