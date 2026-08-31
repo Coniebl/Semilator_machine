@@ -1,6 +1,6 @@
 "use client";
 import QRCode from "react-qr-code";
-import { useEffect, useState } from "react";
+import { useEffect, useState, useRef } from "react";
 import { useRouter } from "next/navigation";
 import { supabase } from "@/lib/supabase";
 
@@ -58,9 +58,11 @@ export default function PairingScreen() {
   const [pairingCode, setPairingCode] = useState("0000000");
   const [sellerId, setSellerId] = useState<string | null>(null);
   const [buyerId, setBuyerId] = useState<string | null>(null);
+  const redirecting = useRef(false);
 
   useEffect(() => {
     let channel: any;
+    let unlinkChannel: any;
     let code: string;
     let pollInterval: NodeJS.Timeout;
 
@@ -72,7 +74,6 @@ export default function PairingScreen() {
         .maybeSingle();
 
       if (!data && !error) {
-         // Machine record was deleted!
          localStorage.removeItem("linkedSellerId");
          router.replace("/link-device");
       }
@@ -86,20 +87,18 @@ export default function PairingScreen() {
         if (!isValidUUID && storedSellerId) {
           localStorage.removeItem("linkedSellerId");
         }
-        // If no valid seller is linked, go back to landing page
         router.replace("/");
         return;
       }
       setSellerId(storedSellerId);
 
-      // Listen for unlinking
       const machineId = localStorage.getItem("machine_id");
       if (machineId) {
         checkUnlinkStatus(machineId);
         pollInterval = setInterval(() => checkUnlinkStatus(machineId), 5000);
 
-        supabase
-          .channel(`machine_unlink_${machineId}`)
+        unlinkChannel = supabase
+          .channel(`machine_unlink_${machineId}_${Date.now()}`)
           .on('postgres_changes', { event: 'DELETE', schema: 'public', table: 'machines', filter: `machine_id=eq.${machineId}` }, () => {
             localStorage.removeItem("linkedSellerId");
             router.replace("/link-device");
@@ -107,10 +106,12 @@ export default function PairingScreen() {
           .subscribe();
       }
 
+      // Clean up any stale pending sessions for this seller before creating a new one
+      await supabase.from('pairing_sessions').delete().eq('seller_id', storedSellerId).eq('status', 'pending');
+
       code = generateCode();
       setPairingCode(code);
 
-      // Pre-fill seller_id since the machine is already linked
       const { error } = await supabase.from('pairing_sessions').insert({ 
         code, 
         status: 'pending',
@@ -118,25 +119,35 @@ export default function PairingScreen() {
       });
       if (error) {
         console.warn("Failed to create pairing session:", error.message);
-        alert("Database Error (pairing_sessions): " + error.message);
       }
 
+      // Restore Realtime listener for pairing_sessions
       channel = supabase
-        .channel(`pairing_${code}`)
+        .channel(`pairing_${code}_${Date.now()}`)
         .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'pairing_sessions', filter: `code=eq.${code}` }, (payload) => {
-          const { buyer_id, paired_user_id } = payload.new;
+          if (redirecting.current) return;
+          
+          const { buyer_id, paired_user_id, status } = payload.new;
           
           let currentBuyerId = buyer_id;
-
           if (paired_user_id && !currentBuyerId) {
             currentBuyerId = paired_user_id;
           }
           
-          if (currentBuyerId && !buyerId) {
-             setBuyerId(currentBuyerId);
-             setTimeout(() => {
-               router.replace(`/dashboard?sellerId=${storedSellerId}&buyerId=${currentBuyerId}`);
-             }, 2500);
+          if (status === 'paired') {
+             if (currentBuyerId) {
+                 redirecting.current = true;
+                 setBuyerId(currentBuyerId);
+                 setTimeout(() => {
+                   router.replace(`/dashboard?sellerId=${storedSellerId}&buyerId=${currentBuyerId}`);
+                 }, 2500);
+             } else {
+                 redirecting.current = true;
+                 setBuyerId('guest');
+                 setTimeout(() => {
+                   router.replace(`/dashboard?sellerId=${storedSellerId}&buyerId=guest`);
+                 }, 2500);
+             }
           }
         })
         .subscribe();
@@ -145,14 +156,15 @@ export default function PairingScreen() {
     initPairing();
 
     return () => {
-      if (channel) supabase.removeChannel(channel);
-      if (pollInterval) clearInterval(pollInterval);
-      const machineId = localStorage.getItem("machine_id");
-      if (machineId) {
-         supabase.removeChannel(supabase.channel(`machine_unlink_${machineId}`));
+      // Clean up the session we created when this component unmounts (e.g. strict mode double-mount, or navigating away)
+      if (code) {
+        supabase.from('pairing_sessions').delete().eq('code', code).then();
       }
+      if (channel) supabase.removeChannel(channel);
+      if (unlinkChannel) supabase.removeChannel(unlinkChannel);
+      if (pollInterval) clearInterval(pollInterval);
     };
-  }, [router, buyerId]);
+  }, [router]);
 
   const codeDisplay = pairingCode.split('').join(' ');
 
