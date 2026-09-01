@@ -5,9 +5,9 @@ import { useRouter } from "next/navigation";
 import { supabase } from "@/lib/supabase";
 
 const generateCode = () => {
-  const chars = "0123456789abcdefghijklmnopqrstuvwxyz";
+  const chars = "0123456789";
   let result = "";
-  for (let i = 0; i < 7; i++) {
+  for (let i = 0; i < 6; i++) {
     result += chars.charAt(Math.floor(Math.random() * chars.length));
   }
   return result;
@@ -55,35 +55,53 @@ const ConnectionPopup = ({ isActive }: { isActive: boolean }) => {
 
 export default function LinkDeviceScreen() {
   const router = useRouter();
-  const [machineCode, setMachineCode] = useState("0000000");
+  const [machineCode, setMachineCode] = useState("000000");
   const [isLinking, setIsLinking] = useState(false);
   const isLinkingRef = useRef(false);
 
   useEffect(() => {
     let channel: any;
     let code: string;
+    let pollInterval: NodeJS.Timeout;
 
     // Always start with a fresh slate when linking a new device
     localStorage.removeItem('sim_transactions_history');
     localStorage.removeItem('last_sim_buyer');
 
+    const checkLinkStatus = async (currentCode: string) => {
+      if (isLinkingRef.current) return;
+      const { data, error } = await supabase
+        .from('machines')
+        .select('seller_id')
+        .eq('machine_id', currentCode)
+        .maybeSingle();
+
+      if (data?.seller_id && !isLinkingRef.current) {
+        isLinkingRef.current = true;
+        setIsLinking(true);
+        localStorage.setItem("linkedSellerId", data.seller_id);
+        setTimeout(() => {
+          router.replace(`/pairing`);
+        }, 2500);
+      }
+    };
+
     const initLink = async () => {
-      // For real testing: The machine should ideally have a static machine_id
-      // to ensure only 1 device links to it. 
-      // Example: Upsert to a 'machine_links' table with a fixed machine_id.
-      // For now, using pairing_sessions for simulation.
-      code = generateCode();
+      let savedMachineId = localStorage.getItem("machine_id");
+      if (!savedMachineId) {
+        savedMachineId = generateCode();
+        localStorage.setItem("machine_id", savedMachineId);
+      }
+      code = savedMachineId;
       setMachineCode(code);
 
-      const { error } = await supabase.from('pairing_sessions').insert({ code, status: 'pending' });
-      if (error) {
-        console.warn("Failed to create link session:", error.message);
-        alert("Database Error (pairing_sessions): " + error.message);
-      }
+      // Check immediately and then poll every 2 seconds as a fallback for Realtime
+      checkLinkStatus(code);
+      pollInterval = setInterval(() => checkLinkStatus(code), 2000);
 
       channel = supabase
         .channel(`link_${code}`)
-        .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'pairing_sessions', filter: `code=eq.${code}` }, (payload) => {
+        .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'machines', filter: `machine_id=eq.${code}` }, (payload) => {
           const { seller_id } = payload.new;
           if (seller_id && !isLinkingRef.current) {
             isLinkingRef.current = true;
@@ -101,33 +119,9 @@ export default function LinkDeviceScreen() {
 
     return () => {
       if (channel) supabase.removeChannel(channel);
+      if (pollInterval) clearInterval(pollInterval);
     };
   }, [router]);
-
-  const handleSimulation = () => {
-    if (!isLinkingRef.current) {
-      isLinkingRef.current = true;
-      setIsLinking(true);
-      
-      // Real Seller's UUID from Supabase Authentication
-      const simSellerId = 'd6732e21-e322-438d-8c4b-3a5afe249e22';
-      localStorage.setItem("linkedSellerId", simSellerId);
-      
-      // Guarantee the user exists in the profiles table to satisfy foreign keys
-      supabase.from('profiles').upsert({ id: simSellerId, username: 'Test Seller' }).then(({ error }) => {
-        if (error) console.error("Profiles Upsert Error:", error.message);
-      });
-      
-      // Update pairing_sessions to reflect the simulation in the database
-      supabase.from('pairing_sessions').update({ seller_id: simSellerId }).eq('code', machineCode).then(({ error }) => {
-        if (error) console.error("Pairing Sessions Update Error:", error.message);
-      });
-      
-      setTimeout(() => {
-        router.replace('/pairing');
-      }, 2500); // 1.2s loading + 1.3s showing checkmark
-    }
-  };
 
   const codeDisplay = machineCode.split('').join(' ');
 
@@ -140,7 +134,7 @@ export default function LinkDeviceScreen() {
 
       <div className="p-6 bg-white flex items-center justify-center shadow-sm rounded-xl">
         <QRCode
-          value={`LINK MACHINE TO DEVICE`}
+          value={machineCode}
           size={300}
           level="L"
         />
@@ -152,13 +146,6 @@ export default function LinkDeviceScreen() {
             {codeDisplay}
           </span>
         </div>
-        
-        <button 
-          onClick={handleSimulation}
-          className="px-6 py-2 bg-gray-200 text-gray-700 font-bold rounded-full hover:bg-gray-300 transition-colors mt-4"
-        >
-          Simulate (Test Mode)
-        </button>
       </div>
 
       <ConnectionPopup isActive={isLinking} />
