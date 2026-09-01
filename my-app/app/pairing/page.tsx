@@ -59,8 +59,12 @@ export default function PairingScreen() {
   const [sellerId, setSellerId] = useState<string | null>(null);
   const [buyerId, setBuyerId] = useState<string | null>(null);
   const redirecting = useRef(false);
+  const isInitializing = useRef(false);
 
   useEffect(() => {
+    if (isInitializing.current) return;
+    isInitializing.current = true;
+
     let channel: any;
     let unlinkChannel: any;
     let code: string;
