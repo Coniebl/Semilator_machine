@@ -128,30 +128,38 @@ export default function PairingScreen() {
       // Restore Realtime listener for pairing_sessions
       channel = supabase
         .channel(`pairing_${code}_${Date.now()}`)
-        .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'pairing_sessions', filter: `code=eq.${code}` }, (payload) => {
+        .on('postgres_changes', { event: '*', schema: 'public', table: 'pairing_sessions', filter: `code=eq.${code}` }, (payload) => {
           if (redirecting.current) return;
-          
-          const { buyer_id, paired_user_id, status } = payload.new;
-          
-          let currentBuyerId = buyer_id;
-          if (paired_user_id && !currentBuyerId) {
-            currentBuyerId = paired_user_id;
+
+          if (payload.eventType === 'DELETE') {
+            redirecting.current = true;
+            router.replace("/");
+            return;
           }
-          
-          if (status === 'paired') {
-             if (currentBuyerId) {
-                 redirecting.current = true;
-                 setBuyerId(currentBuyerId);
-                 setTimeout(() => {
-                   router.replace(`/dashboard?sellerId=${storedSellerId}&buyerId=${currentBuyerId}`);
-                 }, 2500);
-             } else {
-                 redirecting.current = true;
-                 setBuyerId('guest');
-                 setTimeout(() => {
-                   router.replace(`/dashboard?sellerId=${storedSellerId}&buyerId=guest`);
-                 }, 2500);
-             }
+
+          if (payload.eventType === 'UPDATE') {
+            const { buyer_id, paired_user_id, status } = payload.new;
+            
+            let currentBuyerId = buyer_id;
+            if (paired_user_id && !currentBuyerId) {
+              currentBuyerId = paired_user_id;
+            }
+            
+            if (status === 'paired') {
+               if (currentBuyerId) {
+                   redirecting.current = true;
+                   setBuyerId(currentBuyerId);
+                   setTimeout(() => {
+                     router.replace(`/dashboard?sellerId=${storedSellerId}&buyerId=${currentBuyerId}`);
+                   }, 2500);
+               } else {
+                   redirecting.current = true;
+                   setBuyerId('guest');
+                   setTimeout(() => {
+                     router.replace(`/dashboard?sellerId=${storedSellerId}&buyerId=guest`);
+                   }, 2500);
+               }
+            }
           }
         })
         .subscribe();
@@ -196,6 +204,18 @@ export default function PairingScreen() {
           </span>
         </div>
       </div>
+
+      <button 
+        onClick={async () => {
+          if (pairingCode && pairingCode !== "0000000") {
+            await supabase.from('pairing_sessions').delete().eq('code', pairingCode);
+          }
+          router.replace("/");
+        }}
+        className="absolute bottom-8 right-8 bg-red-500 hover:bg-red-600 text-white font-roboto font-bold text-2xl py-4 px-8 rounded-xl shadow-lg transition-colors"
+      >
+        Cancel
+      </button>
 
       <ConnectionPopup isActive={!!buyerId} />
     </div>
