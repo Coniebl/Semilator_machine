@@ -82,6 +82,10 @@ class CameraManager:
         self.burst_target = 0
         self.burst_interval = 0.18  # ~5.5 FPS
         
+        # Motion Freeze & Exposure Controls
+        self.shutter_mode = "auto"  # "auto", "fast_500", "ultra_1000"
+        self.gain_level = 2.0       # 1.0, 2.0, 4.0, 8.0
+
         self.last_saved_file = None
         self.total_captured = count_local_dataset()
         self.mode = "mock"
@@ -128,6 +132,48 @@ class CameraManager:
             current = self.color_swap
         print(f"[CAMERA] Color channel swap set to: {current}")
         return current
+
+    def set_exposure_controls(self, shutter_mode=None, gain=None):
+        with self.lock:
+            if shutter_mode is not None:
+                self.shutter_mode = shutter_mode
+            if gain is not None:
+                self.gain_level = float(gain)
+            current_shutter = self.shutter_mode
+            current_gain = self.gain_level
+
+        if self.mode == "picamera2" and self.picam2:
+            try:
+                if current_shutter == "fast_500":
+                    # 1/500s = 2000 microseconds (shutter speed)
+                    self.picam2.set_controls({
+                        "AeEnable": False,
+                        "ExposureTime": 2000,
+                        "AnalogueGain": current_gain
+                    })
+                    print(f"[EXPOSURE] Set Fast Motion 1/500s (2000us) Gain {current_gain}x")
+                elif current_shutter == "ultra_1000":
+                    # 1/1000s = 1000 microseconds (high speed freeze)
+                    self.picam2.set_controls({
+                        "AeEnable": False,
+                        "ExposureTime": 1000,
+                        "AnalogueGain": current_gain
+                    })
+                    print(f"[EXPOSURE] Set Ultra Fast 1/1000s (1000us) Gain {current_gain}x")
+                else:
+                    # Auto exposure enabled
+                    self.picam2.set_controls({
+                        "AeEnable": True
+                    })
+                    print("[EXPOSURE] Set Auto Exposure (AEC/AGC)")
+            except Exception as e:
+                print(f"[EXPOSURE CONTROL ERROR] {e}")
+
+        return {
+            "success": True,
+            "shutter_mode": current_shutter,
+            "gain": current_gain
+        }
 
     def _convert_to_rgb_image(self, arr):
         """Converts raw camera array to PIL Image, applying color flip if active."""
@@ -363,6 +409,8 @@ class CameraHTTPHandler(BaseHTTPRequestHandler):
                     "mode": cam.mode,
                     "label": cam.active_label,
                     "color_swap": cam.color_swap,
+                    "shutter_mode": cam.shutter_mode,
+                    "gain": cam.gain_level,
                     "burst_active": cam.burst_active,
                     "burst_remaining": cam.burst_remaining,
                     "burst_target": cam.burst_target,
@@ -415,6 +463,15 @@ class CameraHTTPHandler(BaseHTTPRequestHandler):
             self.send_header("Content-Type", "application/json")
             self.end_headers()
             self.wfile.write(json.dumps({"success": True, "color_swap": new_val}).encode("utf-8"))
+
+        elif clean_path == "/exposure":
+            shutter = payload.get("shutter_mode")
+            gain = payload.get("gain")
+            res = cam.set_exposure_controls(shutter, gain)
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps(res).encode("utf-8"))
 
         elif clean_path == "/label":
             new_label = payload.get("label", "fingerlings")

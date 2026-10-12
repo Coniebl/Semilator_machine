@@ -142,6 +142,24 @@ export async function POST(req: Request) {
       }
     }
 
+    if (action === "set_exposure") {
+      try {
+        const res = await fetch("http://127.0.0.1:5000/exposure", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ shutter_mode: body.shutter_mode, gain: body.gain }),
+          signal: AbortSignal.timeout(3000),
+        });
+        const data = await res.json();
+        return NextResponse.json(data);
+      } catch (err: any) {
+        return NextResponse.json(
+          { success: false, error: `Exposure setting failed: ${err.message}` },
+          { status: 502 }
+        );
+      }
+    }
+
     return NextResponse.json({ error: "Invalid action" }, { status: 400 });
   } catch (err: any) {
     return NextResponse.json({ error: err.message }, { status: 500 });
