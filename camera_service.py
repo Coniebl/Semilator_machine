@@ -90,7 +90,20 @@ class CameraManager:
         self.start_thread()
 
     def init_camera(self):
-        # 1. Try OpenCV first if requested/available
+        # 1. Try Picamera2 FIRST (Required for Raspberry Pi 5 CSI camera hardware ISP)
+        if HAS_PICAM:
+            try:
+                self.picam2 = Picamera2()
+                config = self.picam2.create_preview_configuration(main={"size": (1280, 720), "format": "RGB888"})
+                self.picam2.configure(config)
+                self.picam2.start()
+                self.mode = "picamera2"
+                print("[CAMERA] Initialized Raspberry Pi 5 Camera via Picamera2")
+                return
+            except Exception as e:
+                print(f"[CAMERA] Picamera2 init failed: {e}. Falling back to OpenCV/Mock.")
+
+        # 2. Try OpenCV fallback (USB webcams / desktop testing)
         if HAS_CV2:
             try:
                 self.cap = cv2.VideoCapture(0)
@@ -105,19 +118,6 @@ class CameraManager:
             except Exception as e:
                 print(f"[CAMERA] OpenCV init failed: {e}")
                 self.cap = None
-
-        # 2. Try Picamera2 for Raspberry Pi 5 hardware
-        if HAS_PICAM:
-            try:
-                self.picam2 = Picamera2()
-                config = self.picam2.create_preview_configuration(main={"size": (1280, 720), "format": "RGB888"})
-                self.picam2.configure(config)
-                self.picam2.start()
-                self.mode = "picamera2"
-                print("[CAMERA] Initialized Raspberry Pi Camera via Picamera2")
-                return
-            except Exception as e:
-                print(f"[CAMERA] Picamera2 init failed: {e}. Falling back to Mock.")
 
         self.mode = "mock"
         print("[CAMERA] Running in Mock Test Mode (no physical camera detected)")
