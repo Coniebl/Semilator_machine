@@ -26,10 +26,14 @@ HAS_PICAM = False
 HAS_CV2 = False
 
 try:
-    from picam2 import Picamera2
+    from picamera2 import Picamera2
     HAS_PICAM = True
 except ImportError:
-    pass
+    try:
+        from picam2 import Picamera2
+        HAS_PICAM = True
+    except ImportError:
+        pass
 
 try:
     import cv2
@@ -85,11 +89,14 @@ class CameraManager:
 
     def get_current_frame(self):
         if self.mode == "picamera2" and self.picam2:
-            arr = self.picam2.capture_array()
-            img = Image.fromarray(arr)
-            buf = io.BytesIO()
-            img.save(buf, format="JPEG", quality=80)
-            return buf.getvalue(), img
+            try:
+                arr = self.picam2.capture_array()
+                img = Image.fromarray(arr)
+                buf = io.BytesIO()
+                img.save(buf, format="JPEG", quality=80)
+                return buf.getvalue(), img
+            except Exception as e:
+                print(f"[PICAM CAPTURE ERROR] {e}")
 
         elif self.mode == "opencv" and self.cap:
             ret, frame = self.cap.read()
