@@ -317,7 +317,8 @@ class CameraHTTPHandler(BaseHTTPRequestHandler):
         self.end_headers()
 
     def do_GET(self):
-        if self.path == "/video_feed":
+        clean_path = self.path.split("?")[0]
+        if clean_path == "/video_feed":
             self.send_response(200)
             self.send_header("Content-Type", "multipart/x-mixed-replace; boundary=frame")
             self.send_header("Cache-Control", "no-cache, no-store, must-revalidate")
@@ -331,14 +332,28 @@ class CameraHTTPHandler(BaseHTTPRequestHandler):
                 if frame:
                     try:
                         self.wfile.write(b"--frame\r\n")
-                        self.wfile.write(b"Content-Type: image/jpeg\r\n\r\n")
+                        self.wfile.write(f"Content-Type: image/jpeg\r\nContent-Length: {len(frame)}\r\n\r\n".encode("utf-8"))
                         self.wfile.write(frame)
                         self.wfile.write(b"\r\n")
                     except (BrokenPipeError, ConnectionResetError):
                         break
                 time.sleep(0.04)
 
-        elif self.path == "/status":
+        elif clean_path == "/snapshot":
+            with cam.lock:
+                frame = cam.last_frame_bytes
+            if frame:
+                self.send_response(200)
+                self.send_header("Content-Type", "image/jpeg")
+                self.send_header("Content-Length", str(len(frame)))
+                self.send_header("Cache-Control", "no-cache, no-store, must-revalidate")
+                self.end_headers()
+                self.wfile.write(frame)
+            else:
+                self.send_response(503)
+                self.end_headers()
+
+        elif clean_path == "/status":
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.end_headers()
@@ -362,6 +377,7 @@ class CameraHTTPHandler(BaseHTTPRequestHandler):
             self.end_headers()
 
     def do_POST(self):
+        clean_path = self.path.split("?")[0]
         content_len = int(self.headers.get("Content-Length", 0))
         body = self.rfile.read(content_len).decode("utf-8") if content_len > 0 else "{}"
         try:
@@ -369,7 +385,7 @@ class CameraHTTPHandler(BaseHTTPRequestHandler):
         except Exception:
             payload = {}
 
-        if self.path == "/capture":
+        if clean_path == "/capture":
             label = payload.get("label", cam.active_label)
             res = cam.save_capture(label)
             self.send_response(200)
@@ -377,7 +393,7 @@ class CameraHTTPHandler(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(json.dumps(res).encode("utf-8"))
 
-        elif self.path == "/burst/start":
+        elif clean_path == "/burst/start":
             label = payload.get("label", cam.active_label)
             count = payload.get("count", 20)
             res = cam.start_batch_burst(label=label, count=count)
@@ -386,21 +402,21 @@ class CameraHTTPHandler(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(json.dumps(res).encode("utf-8"))
 
-        elif self.path == "/burst/stop":
+        elif clean_path == "/burst/stop":
             res = cam.stop_burst()
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.end_headers()
             self.wfile.write(json.dumps(res).encode("utf-8"))
 
-        elif self.path == "/color_toggle":
+        elif clean_path == "/color_toggle":
             new_val = cam.toggle_color_swap()
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.end_headers()
             self.wfile.write(json.dumps({"success": True, "color_swap": new_val}).encode("utf-8"))
 
-        elif self.path == "/label":
+        elif clean_path == "/label":
             new_label = payload.get("label", "fingerlings")
             with cam.lock:
                 cam.active_label = new_label
@@ -412,6 +428,7 @@ class CameraHTTPHandler(BaseHTTPRequestHandler):
         else:
             self.send_response(404)
             self.end_headers()
+
 
 # Multi-Threaded HTTP Server: prevents video stream from blocking API requests!
 class ThreadedHTTPServer(ThreadingMixIn, HTTPServer):

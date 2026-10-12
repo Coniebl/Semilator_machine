@@ -41,9 +41,9 @@ export default function CameraTestPage() {
     setTimeout(() => setFlash(false), 100);
   };
 
-  // Determine dynamic MJPEG preview URL
+  // Stable MJPEG preview URL
   const streamUrl = typeof window !== "undefined"
-    ? `http://${window.location.hostname}:5000/video_feed?t=${colorSwap}`
+    ? `http://${window.location.hostname}:5000/video_feed`
     : "http://localhost:5000/video_feed";
 
   const pingService = async () => {
@@ -283,10 +283,14 @@ export default function CameraTestPage() {
         <div className="flex-1 bg-black rounded-xl overflow-hidden border border-white/10 relative flex items-center justify-center">
           {serviceStatus === "online" ? (
             <img
-              key={String(colorSwap)}
               src={streamUrl}
               alt="Live Camera Feed"
               className="w-full h-full object-contain"
+              onError={(e) => {
+                setTimeout(() => {
+                  (e.target as HTMLImageElement).src = `${streamUrl}?r=${Date.now()}`;
+                }, 1000);
+              }}
             />
           ) : (
             <div className="flex flex-col items-center justify-center text-center p-6 text-gray-400 gap-2">
