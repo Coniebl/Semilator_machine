@@ -392,9 +392,9 @@ function DashboardContent() {
         </div>
       </div>
 
-      <div className="flex flex-col lg:flex-row flex-1 gap-2.5 overflow-hidden w-full">
+      <div className="flex flex-row flex-1 gap-2.5 overflow-hidden w-full">
         {/* Left Column: LIVE COUNT */}
-        <div className="bg-[#8C8885] rounded-xl p-3 flex flex-col w-full lg:w-[42%] shrink-0">
+        <div className="bg-[#8C8885] rounded-xl p-3 flex flex-col w-[42%] shrink-0">
           <h2 className="font-bold text-white text-base mb-1">LIVE COUNT</h2>
           
           <div className="bg-[#E8E8E8] rounded-lg items-center justify-center flex flex-col py-2 mb-1 flex-1 max-h-[140px]">
