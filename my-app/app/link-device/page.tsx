@@ -126,23 +126,23 @@ export default function LinkDeviceScreen() {
   const codeDisplay = machineCode.split('').join(' ');
 
   return (
-    <div className="w-full h-full bg-white flex flex-col items-center justify-center p-8 gap-12 relative select-none">
-      <div className="flex flex-col items-center gap-4">
-        <h1 className="font-roboto font-bold text-[56px] text-black tracking-wide">LINK TO MOBILE DEVICE</h1>
-        <h2 className="font-roboto font-bold text-3xl text-[#3b7597]">Bind an account from mobile phone</h2>
+    <div className="w-full h-full bg-white flex flex-col items-center justify-center p-4 gap-4 md:gap-5 relative select-none overflow-hidden">
+      <div className="flex flex-col items-center gap-1">
+        <h1 className="font-roboto font-bold text-3xl md:text-4xl text-black tracking-wide">LINK TO MOBILE DEVICE</h1>
+        <h2 className="font-roboto font-bold text-lg md:text-xl text-[#3b7597]">Bind an account from mobile phone</h2>
       </div>
 
-      <div className="p-6 bg-white flex items-center justify-center shadow-sm rounded-xl">
+      <div className="p-3 bg-white flex items-center justify-center shadow-sm rounded-xl border border-gray-100">
         <QRCode
           value={machineCode}
-          size={300}
+          size={170}
           level="L"
         />
       </div>
 
-      <div className="flex flex-col items-center gap-4 mt-4">
-        <div className="bg-[#f0f0f0] border-[3px] border-[#d9d9d9] py-4 px-10 rounded-xl min-w-[380px] flex items-center justify-center shadow-sm">
-          <span className="font-roboto font-bold text-5xl text-black tracking-[0.3em]">
+      <div className="flex flex-col items-center mt-1">
+        <div className="bg-[#f0f0f0] border-2 border-[#d9d9d9] py-2 px-6 rounded-xl min-w-[280px] flex items-center justify-center shadow-sm">
+          <span className="font-roboto font-bold text-3xl text-black tracking-[0.25em]">
             {codeDisplay}
           </span>
         </div>

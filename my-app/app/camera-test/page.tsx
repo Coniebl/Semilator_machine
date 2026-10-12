@@ -153,23 +153,23 @@ export default function CameraTestPage() {
   ];
 
   return (
-    <div className="w-full h-full bg-[#1e2022] text-white p-6 flex flex-col font-roboto select-none relative overflow-hidden">
+    <div className="w-full h-full bg-[#1e2022] text-white p-2.5 flex flex-col font-roboto select-none relative overflow-hidden">
       {/* Visual Shutter Flash */}
       {flash && <div className="absolute inset-0 bg-white/70 z-50 pointer-events-none" />}
 
       {/* Header Bar */}
-      <div className="flex flex-row justify-between items-center bg-[#2d3035] px-6 py-4 rounded-2xl mb-4 border border-white/10">
-        <div className="flex flex-row items-center gap-4">
+      <div className="flex flex-row justify-between items-center bg-[#2d3035] px-4 py-2 rounded-xl mb-2 border border-white/10">
+        <div className="flex flex-row items-center gap-3">
           <button
             onClick={() => router.push("/")}
-            className="bg-[#4a4f57] hover:bg-[#5a606a] text-white font-bold px-5 py-2.5 rounded-xl text-lg flex items-center gap-2"
+            className="bg-[#4a4f57] hover:bg-[#5a606a] text-white font-bold px-3 py-1.5 rounded-lg text-sm flex items-center gap-1.5"
           >
-            ← Back to Machine
+            ← Back
           </button>
           <div>
-            <h1 className="text-2xl font-bold tracking-wide">CAMERA CALIBRATION & ML DATA COLLECTOR</h1>
-            <div className="flex items-center gap-2 text-sm text-gray-300">
-              <span className={`inline-block w-3 h-3 rounded-full ${serviceStatus === "online" ? "bg-green-500 animate-pulse" : serviceStatus === "connecting" ? "bg-yellow-500" : "bg-blue-400"}`} />
+            <h1 className="text-base font-bold tracking-wide">CAMERA CALIBRATION & ML DATA COLLECTOR</h1>
+            <div className="flex items-center gap-1.5 text-xs text-gray-300">
+              <span className={`inline-block w-2.5 h-2.5 rounded-full ${serviceStatus === "online" ? "bg-green-500 animate-pulse" : serviceStatus === "connecting" ? "bg-yellow-500" : "bg-blue-400"}`} />
               <span>
                 {serviceStatus === "online" ? "Picamera2 Hardware Service Online" : serviceStatus === "connecting" ? "Detecting Camera..." : "Browser Webcam (Fallback)"}
               </span>
@@ -180,16 +180,16 @@ export default function CameraTestPage() {
         <button
           onClick={handleExitKiosk}
           disabled={isExiting}
-          className="bg-red-600 hover:bg-red-700 text-white font-bold px-6 py-3 rounded-xl text-lg transition-colors shadow-lg flex items-center gap-2"
+          className="bg-red-600 hover:bg-red-700 text-white font-bold px-4 py-1.5 rounded-lg text-sm transition-colors shadow-lg flex items-center gap-1.5"
         >
-          {isExiting ? "Exiting Kiosk..." : "❌ Exit Kiosk [Test]"}
+          {isExiting ? "Exiting..." : "❌ Exit Kiosk [Test]"}
         </button>
       </div>
 
       {/* Main Content: Split Grid */}
-      <div className="flex flex-1 gap-6 overflow-hidden">
+      <div className="flex flex-1 gap-2.5 overflow-hidden">
         {/* Left Column: Live Video Feed */}
-        <div className="flex-1 bg-black rounded-2xl overflow-hidden border-2 border-white/10 relative flex items-center justify-center">
+        <div className="flex-1 bg-black rounded-xl overflow-hidden border border-white/10 relative flex items-center justify-center">
           {serviceStatus === "online" ? (
             <img
               src="http://localhost:5000/video_feed"
@@ -208,26 +208,26 @@ export default function CameraTestPage() {
 
           {/* Burst Active Badge */}
           {burstActive && (
-            <div className="absolute top-4 left-4 bg-red-600 text-white font-bold px-4 py-2 rounded-xl flex items-center gap-2 text-lg shadow-lg animate-pulse">
-              <span className="w-3 h-3 bg-white rounded-full animate-ping" />
-              BURST RECORDING ACTIVE (5 FPS)
+            <div className="absolute top-2.5 left-2.5 bg-red-600 text-white font-bold px-3 py-1 rounded-lg flex items-center gap-2 text-sm shadow-lg animate-pulse">
+              <span className="w-2 h-2 bg-white rounded-full animate-ping" />
+              BURST ACTIVE (5 FPS)
             </div>
           )}
 
           {/* Live Overlay Stats */}
-          <div className="absolute bottom-4 left-4 right-4 bg-black/60 backdrop-blur-md px-4 py-3 rounded-xl flex justify-between items-center text-sm border border-white/10">
+          <div className="absolute bottom-2 left-2 right-2 bg-black/70 backdrop-blur-md px-3 py-1.5 rounded-lg flex justify-between items-center text-xs border border-white/10">
             <span>Label: <strong className="text-green-400">{activeLabel}</strong></span>
-            <span>Session Captures: <strong className="text-yellow-400 text-base">{sessionCount}</strong></span>
+            <span>Total Captures: <strong className="text-yellow-400 text-sm">{sessionCount}</strong></span>
             <span>Last Saved: <strong className="text-gray-300">{lastSaved || "None"}</strong></span>
           </div>
         </div>
 
         {/* Right Column: Touch Controls & Dataset Tagging */}
-        <div className="w-[380px] flex flex-col gap-4">
+        <div className="w-[310px] flex flex-col gap-2">
           {/* Label Selection Card */}
-          <div className="bg-[#2d3035] p-5 rounded-2xl border border-white/10">
-            <h2 className="text-lg font-bold text-gray-200 mb-3">1. SELECT CATEGORY / TAG</h2>
-            <div className="grid grid-cols-1 gap-2 mb-3">
+          <div className="bg-[#2d3035] p-3 rounded-xl border border-white/10">
+            <h2 className="text-xs font-bold text-gray-300 mb-1.5 uppercase tracking-wider">1. Select Category / Tag</h2>
+            <div className="grid grid-cols-2 gap-1.5 mb-2">
               {categories.map((cat) => (
                 <button
                   key={cat.id}
@@ -235,9 +235,9 @@ export default function CameraTestPage() {
                     setSelectedLabel(cat.id);
                     setCustomLabel("");
                   }}
-                  className={`py-3 px-4 rounded-xl font-bold text-left text-base transition-all ${
+                  className={`py-1.5 px-2.5 rounded-lg font-bold text-left text-xs transition-all truncate ${
                     selectedLabel === cat.id && !customLabel
-                      ? "bg-green-600 text-white shadow-md ring-2 ring-white"
+                      ? "bg-green-600 text-white shadow ring-1 ring-white"
                       : "bg-[#3e434a] text-gray-200 hover:bg-[#4a5058]"
                   }`}
                 >
@@ -246,27 +246,26 @@ export default function CameraTestPage() {
               ))}
             </div>
 
-            <div className="mt-2">
-              <label className="text-xs text-gray-400 mb-1 block">Or type custom label:</label>
+            <div>
               <input
                 type="text"
-                placeholder="e.g. batch_a_juvenile"
+                placeholder="Or custom label (e.g. batch_1)..."
                 value={customLabel}
                 onChange={(e) => setCustomLabel(e.target.value)}
-                className="w-full bg-[#1e2022] border border-white/20 rounded-xl px-3 py-2 text-white font-mono text-sm focus:outline-none focus:border-green-500"
+                className="w-full bg-[#1e2022] border border-white/20 rounded-lg px-2.5 py-1.5 text-white font-mono text-xs focus:outline-none focus:border-green-500"
               />
             </div>
           </div>
 
           {/* Capture Trigger Card */}
-          <div className="bg-[#2d3035] p-5 rounded-2xl border border-white/10 flex-1 flex flex-col justify-between">
-            <h2 className="text-lg font-bold text-gray-200 mb-2">2. CAPTURE SAMPLES</h2>
+          <div className="bg-[#2d3035] p-3 rounded-xl border border-white/10 flex-1 flex flex-col justify-between">
+            <h2 className="text-xs font-bold text-gray-300 mb-1 uppercase tracking-wider">2. Capture Samples</h2>
 
-            <div className="flex flex-col gap-3 my-auto">
+            <div className="flex flex-col gap-2 my-auto">
               {/* Single Shot Button */}
               <button
                 onClick={handleCaptureSingle}
-                className="w-full bg-green-600 hover:bg-green-700 active:scale-98 text-white font-bold py-5 rounded-2xl text-2xl shadow-xl flex items-center justify-center gap-3 transition-transform"
+                className="w-full bg-green-600 hover:bg-green-700 active:scale-98 text-white font-bold py-3 rounded-xl text-lg shadow-md flex items-center justify-center gap-2 transition-transform"
               >
                 📸 TAKE PHOTO
               </button>
@@ -274,7 +273,7 @@ export default function CameraTestPage() {
               {/* Continuous Burst Button */}
               <button
                 onClick={handleToggleBurst}
-                className={`w-full font-bold py-5 rounded-2xl text-2xl shadow-xl flex items-center justify-center gap-3 transition-all ${
+                className={`w-full font-bold py-3 rounded-xl text-lg shadow-md flex items-center justify-center gap-2 transition-all ${
                   burstActive
                     ? "bg-red-600 hover:bg-red-700 animate-pulse text-white"
                     : "bg-amber-600 hover:bg-amber-700 text-white"
@@ -284,10 +283,9 @@ export default function CameraTestPage() {
               </button>
             </div>
 
-            <div className="bg-[#1e2022] p-3 rounded-xl border border-white/10 text-xs text-gray-400 space-y-1">
-              <div>📁 <strong>Destination folder:</strong></div>
-              <div className="font-mono text-green-400 truncate">Semilator_machine/dataset/{activeLabel}/</div>
-              <div className="text-[11px] text-gray-400">💡 Tap "Start Burst" to capture fish passing through continuously.</div>
+            <div className="bg-[#1e2022] p-2 rounded-lg border border-white/10 text-[11px] text-gray-400 space-y-0.5">
+              <div className="truncate">📁 Folder: <span className="font-mono text-green-400">dataset/{activeLabel}/</span></div>
+              <div className="text-[10px] text-gray-500">Tap "Start Burst" to log multiple fish frames.</div>
             </div>
           </div>
         </div>

@@ -362,29 +362,29 @@ function DashboardContent() {
   };
 
   return (
-    <div className="w-full h-full p-4 flex flex-col font-roboto text-black bg-white">
+    <div className="w-full h-full p-2.5 flex flex-col font-roboto text-black bg-white overflow-hidden">
       {/* Top Header */}
-      <div className="flex flex-row justify-between items-center bg-[#D9D9D9] rounded-2xl px-6 py-4 mb-4">
+      <div className="flex flex-row justify-between items-center bg-[#D9D9D9] rounded-xl px-4 py-2 mb-2">
         <div className="flex flex-row items-center">
-          <ProfileAvatar imageUrl={sellerPic || undefined} />
-          <span className="font-bold text-3xl text-black ml-2 mr-4">{sellerName}</span>
+          <ProfileAvatar imageUrl={sellerPic || undefined} className="w-8 h-8" />
+          <span className="font-bold text-xl text-black ml-2 mr-3">{sellerName}</span>
           
           <FishAnimation isRunning={isRunning} />
           
-          <ProfileAvatar imageUrl={buyerPic || undefined} className="ml-4" />
-          <span className="font-bold text-3xl text-black ml-2">{buyerName}</span>
+          <ProfileAvatar imageUrl={buyerPic || undefined} className="w-8 h-8 ml-3" />
+          <span className="font-bold text-xl text-black ml-2">{buyerName}</span>
         </div>
-        <div className="flex flex-row items-center gap-3">
-          <span className="font-bold text-2xl text-black mr-3">{timeStr}</span>
+        <div className="flex flex-row items-center gap-2">
+          <span className="font-bold text-lg text-black mr-2">{timeStr}</span>
           <button
             onClick={() => router.push("/camera-test")}
-            className="bg-[#093c5d] hover:bg-[#0c4e78] py-3 px-5 rounded-lg text-white font-bold text-lg transition-colors flex items-center gap-1.5"
+            className="bg-[#093c5d] hover:bg-[#0c4e78] py-1.5 px-3 rounded-lg text-white font-bold text-sm transition-colors flex items-center gap-1"
             title="Camera & Dataset Test"
           >
             📷 Test
           </button>
           <button 
-            className="bg-[#BA2A23] py-3 px-8 rounded-lg text-white font-bold text-xl hover:bg-[#9a211a] transition-colors"
+            className="bg-[#BA2A23] py-1.5 px-5 rounded-lg text-white font-bold text-base hover:bg-[#9a211a] transition-colors"
             onClick={handleDone}
           >
             DONE
@@ -392,24 +392,24 @@ function DashboardContent() {
         </div>
       </div>
 
-      <div className="flex flex-col lg:flex-row flex-1 gap-3 overflow-hidden w-full">
+      <div className="flex flex-col lg:flex-row flex-1 gap-2.5 overflow-hidden w-full">
         {/* Left Column: LIVE COUNT */}
-        <div className="bg-[#8C8885] rounded-xl p-4 flex flex-col w-full lg:w-[45%] shrink-0">
-          <h2 className="font-bold text-white text-xl mb-2">LIVE COUNT</h2>
+        <div className="bg-[#8C8885] rounded-xl p-3 flex flex-col w-full lg:w-[42%] shrink-0">
+          <h2 className="font-bold text-white text-base mb-1">LIVE COUNT</h2>
           
-          <div className="bg-[#E8E8E8] rounded-lg items-center justify-center flex flex-col py-4 mb-2 flex-1 max-h-[220px]">
-            <span className="font-bold text-[88px] text-black leading-[90px]">
+          <div className="bg-[#E8E8E8] rounded-lg items-center justify-center flex flex-col py-2 mb-1 flex-1 max-h-[140px]">
+            <span className="font-bold text-5xl md:text-6xl text-black leading-tight">
               {String(counted).padStart(4, '0')}
             </span>
-            <span className="font-bold text-2xl text-black mt-1">{fishName}</span>
+            <span className="font-bold text-lg text-black mt-0.5">{fishName}</span>
           </div>
           
-          <div className="h-[2px] bg-white my-3" />
+          <div className="h-[1px] bg-white/60 my-2" />
           
-          <div className="flex flex-row justify-between items-center mb-2">
-            <span className="font-bold text-white text-2xl">Target:</span>
+          <div className="flex flex-row justify-between items-center mb-1.5">
+            <span className="font-bold text-white text-lg">Target:</span>
             <input 
-              className={`font-bold text-white text-2xl text-right border-2 border-white rounded px-2 w-28 h-10 ${isRunning ? 'bg-[#9a9794] opacity-80 border-transparent' : 'bg-transparent'}`}
+              className={`font-bold text-white text-lg text-right border border-white rounded px-2 w-24 h-8 ${isRunning ? 'bg-[#9a9794] opacity-80 border-transparent' : 'bg-transparent'}`}
               value={targetStr}
               onChange={e => setTargetStr(e.target.value)}
               type="number"
@@ -418,10 +418,10 @@ function DashboardContent() {
               placeholder="0"
             />
           </div>
-          <div className="flex flex-row justify-between items-center mb-2">
-            <span className="font-bold text-white text-2xl">Price per piece:</span>
+          <div className="flex flex-row justify-between items-center mb-1.5">
+            <span className="font-bold text-white text-lg">Price per piece:</span>
             <input 
-              className={`font-bold text-white text-2xl text-right border-2 border-white rounded px-2 w-28 h-10 ${isRunning ? 'bg-[#9a9794] opacity-80 border-transparent' : 'bg-transparent'}`}
+              className={`font-bold text-white text-lg text-right border border-white rounded px-2 w-24 h-8 ${isRunning ? 'bg-[#9a9794] opacity-80 border-transparent' : 'bg-transparent'}`}
               value={priceStr}
               onChange={e => setPriceStr(e.target.value)}
               type="number"
@@ -430,23 +430,23 @@ function DashboardContent() {
               placeholder="0"
             />
           </div>
-          <div className="flex flex-row justify-between items-center mb-2">
-            <span className="font-bold text-white text-2xl">Total:</span>
-            <span className="font-bold text-white text-2xl">₱ {total.toFixed(2)}</span>
+          <div className="flex flex-row justify-between items-center mb-1.5">
+            <span className="font-bold text-white text-lg">Total:</span>
+            <span className="font-bold text-white text-lg">₱ {total.toFixed(2)}</span>
           </div>
           
-          <div className="h-[2px] bg-white my-3" />
+          <div className="h-[1px] bg-white/60 my-2" />
           
-          <div className="flex flex-row justify-between mt-auto mb-1 gap-4">
+          <div className="flex flex-row justify-between mt-auto mb-0.5 gap-2.5">
             <button 
-              className={`bg-[#BA2A23] py-3 rounded-lg flex-1 text-white font-bold text-2xl text-center ${isRunning ? 'opacity-50 cursor-not-allowed' : 'hover:bg-[#9a211a]'}`}
+              className={`bg-[#BA2A23] py-2 rounded-lg flex-1 text-white font-bold text-lg text-center ${isRunning ? 'opacity-50 cursor-not-allowed' : 'hover:bg-[#9a211a]'}`}
               onClick={handleClear}
               disabled={isRunning}
             >
               Clear
             </button>
             <button 
-              className={`bg-[#0EA40E] py-3 rounded-lg flex-1 text-white font-bold text-2xl text-center ${isRunning ? 'opacity-70 cursor-not-allowed' : 'hover:bg-[#0b800b]'}`}
+              className={`bg-[#0EA40E] py-2 rounded-lg flex-1 text-white font-bold text-lg text-center ${isRunning ? 'opacity-70 cursor-not-allowed' : 'hover:bg-[#0b800b]'}`}
               onClick={handleNewTransaction}
               disabled={isRunning}
             >
@@ -456,63 +456,63 @@ function DashboardContent() {
         </div>
 
         {/* Right Column: Verification Details + History */}
-        <div className="flex flex-col flex-1 gap-3 overflow-hidden">
+        <div className="flex flex-col flex-1 gap-2.5 overflow-hidden">
           {/* Verification Details */}
-          <div className="bg-[#8C8885] rounded-xl p-5 flex flex-col shrink-0 h-[220px]">
-            <h2 className="font-bold text-white text-2xl mb-4">COUNTING VERIFICATION DETAILS</h2>
-            <div className="flex flex-row justify-between flex-1 gap-3">
-              <div className={`flex-1 h-full bg-[#E8E8E8] border-4 rounded-lg px-1 py-1 flex items-center justify-center relative ${verification.show ? (verification.vision === verification.final ? 'border-[#3ce83c]' : 'border-[#e83c3c]') : 'border-transparent'}`}>
-                <span className="font-bold text-lg text-black absolute top-2 left-3">Vision</span>
-                <span className="font-bold text-6xl text-black mt-6">{verification.show ? verification.vision : '---'}</span>
+          <div className="bg-[#8C8885] rounded-xl p-3 flex flex-col shrink-0 h-[135px]">
+            <h2 className="font-bold text-white text-base mb-1.5">COUNTING VERIFICATION DETAILS</h2>
+            <div className="flex flex-row justify-between flex-1 gap-2">
+              <div className={`flex-1 h-full bg-[#E8E8E8] border-2 rounded-lg px-1 py-0.5 flex items-center justify-center relative ${verification.show ? (verification.vision === verification.final ? 'border-[#3ce83c]' : 'border-[#e83c3c]') : 'border-transparent'}`}>
+                <span className="font-bold text-xs text-black absolute top-1 left-2">Vision</span>
+                <span className="font-bold text-3xl text-black mt-3">{verification.show ? verification.vision : '---'}</span>
               </div>
-              <div className={`flex-1 h-full bg-[#E8E8E8] border-4 rounded-lg px-1 py-1 flex items-center justify-center relative ${verification.show ? (verification.sensor3 === verification.final ? 'border-[#3ce83c]' : 'border-[#e83c3c]') : 'border-transparent'}`}>
-                <span className="font-bold text-lg text-black absolute top-2 left-3">ToF</span>
-                <span className="font-bold text-6xl text-black mt-6">{verification.show ? verification.sensor3 : '---'}</span>
+              <div className={`flex-1 h-full bg-[#E8E8E8] border-2 rounded-lg px-1 py-0.5 flex items-center justify-center relative ${verification.show ? (verification.sensor3 === verification.final ? 'border-[#3ce83c]' : 'border-[#e83c3c]') : 'border-transparent'}`}>
+                <span className="font-bold text-xs text-black absolute top-1 left-2">ToF</span>
+                <span className="font-bold text-3xl text-black mt-3">{verification.show ? verification.sensor3 : '---'}</span>
               </div>
-              <div className={`flex-1 h-full bg-[#E8E8E8] border-4 rounded-lg px-1 py-1 flex items-center justify-center relative ${verification.show ? (verification.thermal === verification.final ? 'border-[#3ce83c]' : 'border-[#e83c3c]') : 'border-transparent'}`}>
-                <span className="font-bold text-lg text-black absolute top-2 left-3">IR</span>
-                <span className="font-bold text-6xl text-black mt-6">{verification.show ? verification.thermal : '---'}</span>
+              <div className={`flex-1 h-full bg-[#E8E8E8] border-2 rounded-lg px-1 py-0.5 flex items-center justify-center relative ${verification.show ? (verification.thermal === verification.final ? 'border-[#3ce83c]' : 'border-[#e83c3c]') : 'border-transparent'}`}>
+                <span className="font-bold text-xs text-black absolute top-1 left-2">IR</span>
+                <span className="font-bold text-3xl text-black mt-3">{verification.show ? verification.thermal : '---'}</span>
               </div>
-              <div className={`flex-1 h-full rounded-lg px-1 py-1 flex items-center justify-center relative ${verification.show ? 'bg-[#3ce83c]' : 'bg-[#A9A5A2]'}`}>
-                <span className="font-bold text-lg text-black absolute top-2 left-3">Final</span>
-                <span className="font-bold text-[72px] text-black mt-6">{verification.show ? verification.final : '---'}</span>
+              <div className={`flex-1 h-full rounded-lg px-1 py-0.5 flex items-center justify-center relative ${verification.show ? 'bg-[#3ce83c]' : 'bg-[#A9A5A2]'}`}>
+                <span className="font-bold text-xs text-black absolute top-1 left-2">Final</span>
+                <span className="font-bold text-4xl text-black mt-3">{verification.show ? verification.final : '---'}</span>
               </div>
             </div>
           </div>
 
           {/* History Panel */}
-          <div className="bg-[#8C8885] rounded-xl p-5 flex flex-col flex-1 overflow-hidden">
-            <h2 className="font-bold text-white text-2xl mb-4">DAILY TRANSACTION HISTORY</h2>
-            <div className="flex-1 overflow-y-auto no-scrollbar pr-2">
+          <div className="bg-[#8C8885] rounded-xl p-3 flex flex-col flex-1 overflow-hidden">
+            <h2 className="font-bold text-white text-base mb-1.5">DAILY TRANSACTION HISTORY</h2>
+            <div className="flex-1 overflow-y-auto no-scrollbar pr-1">
               {history.map((item, index) => (
-                <div key={item.id} className="group relative flex flex-row bg-[#E8E8E8] rounded-lg mb-3 overflow-hidden items-center py-3">
-                  <div className="bg-[#BA2A23] w-8 h-8 rounded-full flex items-center justify-center m-4 shrink-0">
-                    <span className="font-bold text-white text-base">{history.length - index}</span>
+                <div key={item.id} className="group relative flex flex-row bg-[#E8E8E8] rounded-lg mb-2 overflow-hidden items-center py-1.5">
+                  <div className="bg-[#BA2A23] w-6 h-6 rounded-full flex items-center justify-center m-2 shrink-0">
+                    <span className="font-bold text-white text-xs">{history.length - index}</span>
                   </div>
                   <div className="flex-1 px-2">
-                    <div className="flex flex-row justify-around mb-2">
-                      <span className="font-bold text-base text-black">TO</span>
-                      <span className="font-bold text-base text-black">COUNT</span>
-                      <span className="font-bold text-base text-black">AMOUNT</span>
+                    <div className="flex flex-row justify-around mb-0.5">
+                      <span className="font-bold text-xs text-gray-600">TO</span>
+                      <span className="font-bold text-xs text-gray-600">COUNT</span>
+                      <span className="font-bold text-xs text-gray-600">AMOUNT</span>
                     </div>
                     <div className="flex flex-row justify-around items-center">
-                      <span className="font-bold text-4xl text-[#0088ff]">{item.buyerName || 'Buyer'}</span>
-                      <span className="font-bold text-4xl text-[#1eb81e]">{item.count}</span>
-                      <span className="font-bold text-4xl text-[#d0c326]">₱ {parseFloat(item.amount || 0).toFixed(2)}</span>
+                      <span className="font-bold text-xl text-[#0088ff]">{item.buyerName || 'Buyer'}</span>
+                      <span className="font-bold text-xl text-[#1eb81e]">{item.count}</span>
+                      <span className="font-bold text-xl text-[#b8ab17]">₱ {parseFloat(item.amount || 0).toFixed(2)}</span>
                     </div>
-                    <div className="font-bold text-center text-lg text-[#666666] mt-3">
+                    <div className="font-bold text-center text-xs text-[#666666] mt-1">
                       {item.date}
                     </div>
                   </div>
                   <button 
-                    className="absolute right-0 top-0 bottom-0 w-28 bg-[#BA2A23] text-white font-bold translate-x-full group-hover:translate-x-0 transition-transform duration-300 flex items-center justify-center text-xl"
+                    className="absolute right-0 top-0 bottom-0 w-20 bg-[#BA2A23] text-white font-bold translate-x-full group-hover:translate-x-0 transition-transform duration-300 flex items-center justify-center text-sm"
                     onClick={() => handleDeleteHistory(item.id)}
                   >
                     Delete
                   </button>
                 </div>
               ))}
-              <div className="font-bold text-center text-[#666666] text-2xl mt-6 mb-4">
+              <div className="font-bold text-center text-white/80 text-sm mt-3 mb-1">
                 Old entries in app
               </div>
             </div>

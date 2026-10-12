@@ -181,25 +181,25 @@ export default function PairingScreen() {
   const codeDisplay = pairingCode.split('').join(' ');
 
   return (
-    <div className="w-full h-full bg-white flex flex-col items-center justify-center p-8 gap-12 select-none relative">
-      <div className="flex flex-col items-center gap-4">
-        <h1 className="font-roboto font-bold text-[64px] text-black">Buyer Scan QR Code</h1>
-        <h2 className="font-roboto font-bold text-3xl text-[#3b7597]">Connect your phone to start the transaction</h2>
+    <div className="w-full h-full bg-white flex flex-col items-center justify-center p-4 gap-4 md:gap-5 select-none relative overflow-hidden">
+      <div className="flex flex-col items-center gap-1">
+        <h1 className="font-roboto font-bold text-3xl md:text-4xl text-black">Buyer Scan QR Code</h1>
+        <h2 className="font-roboto font-bold text-lg md:text-xl text-[#3b7597]">Connect your phone to start the transaction</h2>
       </div>
 
-      <div className="flex flex-row items-center justify-center gap-16">
-        <div className="p-6 bg-white flex items-center justify-center shadow-sm rounded-xl">
+      <div className="flex flex-row items-center justify-center">
+        <div className="p-3 bg-white flex items-center justify-center shadow-sm rounded-xl border border-gray-100">
           <QRCode
             value={pairingCode}
-            size={260}
+            size={170}
             level="L"
           />
         </div>
       </div>
 
-      <div className="flex flex-col items-center gap-4">
-        <div className="bg-[#f0f0f0] border-[3px] border-[#d9d9d9] py-4 px-10 rounded-xl min-w-[380px] flex items-center justify-center shadow-sm">
-          <span className="font-roboto font-bold text-5xl text-black tracking-[0.3em]">
+      <div className="flex flex-col items-center">
+        <div className="bg-[#f0f0f0] border-2 border-[#d9d9d9] py-2 px-6 rounded-xl min-w-[280px] flex items-center justify-center shadow-sm">
+          <span className="font-roboto font-bold text-3xl text-black tracking-[0.25em]">
             {codeDisplay}
           </span>
         </div>
@@ -212,7 +212,7 @@ export default function PairingScreen() {
           }
           router.replace("/");
         }}
-        className="absolute bottom-8 right-8 bg-red-500 hover:bg-red-600 text-white font-roboto font-bold text-2xl py-4 px-8 rounded-xl shadow-lg transition-colors"
+        className="absolute bottom-4 right-4 bg-red-500 hover:bg-red-600 text-white font-roboto font-bold text-base md:text-lg py-2.5 px-6 rounded-xl shadow-lg transition-colors"
       >
         Cancel
       </button>

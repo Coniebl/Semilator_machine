@@ -200,24 +200,25 @@ export default function BootloadScreen() {
       </div>
 
       {/* Main content layer */}
-      <div className={`flex flex-col items-center justify-center gap-6 z-10 ${phase >= 1 ? 'fade-in-up' : 'opacity-0 hidden'}`}>
+      <div className={`flex flex-col items-center justify-center gap-3 z-10 ${phase >= 1 ? 'fade-in-up' : 'opacity-0 hidden'}`}>
         <div className="flex items-center justify-center">
           <Image 
             src="/logo.png" 
             alt="Logo" 
-            width={450} 
-            height={420} 
+            width={220} 
+            height={205} 
+            className="w-36 h-36 md:w-48 md:h-44 object-contain"
             style={{ filter: "brightness(0) saturate(100%) invert(18%) sepia(47%) saturate(3081%) hue-rotate(182deg) brightness(97%) contrast(92%)" }}
             priority
           />
         </div>
         
-        <div className="flex flex-col items-center gap-6">
-          <h1 className="font-montserrat font-bold text-[#093c5d] text-[88px] text-center tracking-wide">
+        <div className="flex flex-col items-center gap-2">
+          <h1 className="font-montserrat font-bold text-[#093c5d] text-5xl md:text-6xl text-center tracking-wide">
             SEMILATOR
           </h1>
           <p 
-            className="font-roboto font-bold text-[#3b7597] text-4xl text-center transition-opacity duration-700 ease-in-out mb-16"
+            className="font-roboto font-bold text-[#3b7597] text-xl md:text-2xl text-center transition-opacity duration-700 ease-in-out"
             style={{ opacity: textOpacity }}
           >
             Tap anywhere to continue
