@@ -175,6 +175,30 @@ export default function BootloadScreen() {
         </div>
       ))}
 
+      {/* Temporary Testing Controls Bar */}
+      <div className="fixed top-4 right-4 z-50 flex items-center gap-3">
+        <button
+          onClick={(e) => {
+            e.stopPropagation();
+            router.push("/camera-test");
+          }}
+          className="bg-[#093c5d] hover:bg-[#0c4e78] text-white font-mono font-bold text-sm px-4 py-2.5 rounded-xl shadow-lg border border-white/20 transition-all flex items-center gap-2"
+        >
+          📷 Camera & Dataset Test
+        </button>
+        <button
+          onClick={(e) => {
+            e.stopPropagation();
+            if (confirm("Exit Kiosk mode and return to Pi desktop?")) {
+              fetch("/api/exit", { method: "POST" }).catch(() => window.close());
+            }
+          }}
+          className="bg-red-600/90 hover:bg-red-700 text-white font-mono font-bold text-sm px-4 py-2.5 rounded-xl shadow-lg border border-white/20 transition-all flex items-center gap-2"
+        >
+          ❌ Exit Kiosk [Test]
+        </button>
+      </div>
+
       {/* Main content layer */}
       <div className={`flex flex-col items-center justify-center gap-6 z-10 ${phase >= 1 ? 'fade-in-up' : 'opacity-0 hidden'}`}>
         <div className="flex items-center justify-center">

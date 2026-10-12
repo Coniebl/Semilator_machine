@@ -374,8 +374,15 @@ function DashboardContent() {
           <ProfileAvatar imageUrl={buyerPic || undefined} className="ml-4" />
           <span className="font-bold text-3xl text-black ml-2">{buyerName}</span>
         </div>
-        <div className="flex flex-row items-center">
-          <span className="font-bold text-2xl text-black mr-6">{timeStr}</span>
+        <div className="flex flex-row items-center gap-3">
+          <span className="font-bold text-2xl text-black mr-3">{timeStr}</span>
+          <button
+            onClick={() => router.push("/camera-test")}
+            className="bg-[#093c5d] hover:bg-[#0c4e78] py-3 px-5 rounded-lg text-white font-bold text-lg transition-colors flex items-center gap-1.5"
+            title="Camera & Dataset Test"
+          >
+            📷 Test
+          </button>
           <button 
             className="bg-[#BA2A23] py-3 px-8 rounded-lg text-white font-bold text-xl hover:bg-[#9a211a] transition-colors"
             onClick={handleDone}
@@ -459,11 +466,11 @@ function DashboardContent() {
                 <span className="font-bold text-6xl text-black mt-6">{verification.show ? verification.vision : '---'}</span>
               </div>
               <div className={`flex-1 h-full bg-[#E8E8E8] border-4 rounded-lg px-1 py-1 flex items-center justify-center relative ${verification.show ? (verification.sensor3 === verification.final ? 'border-[#3ce83c]' : 'border-[#e83c3c]') : 'border-transparent'}`}>
-                <span className="font-bold text-lg text-black absolute top-2 left-3">Sensor 3</span>
+                <span className="font-bold text-lg text-black absolute top-2 left-3">ToF</span>
                 <span className="font-bold text-6xl text-black mt-6">{verification.show ? verification.sensor3 : '---'}</span>
               </div>
               <div className={`flex-1 h-full bg-[#E8E8E8] border-4 rounded-lg px-1 py-1 flex items-center justify-center relative ${verification.show ? (verification.thermal === verification.final ? 'border-[#3ce83c]' : 'border-[#e83c3c]') : 'border-transparent'}`}>
-                <span className="font-bold text-lg text-black absolute top-2 left-3">Thermal</span>
+                <span className="font-bold text-lg text-black absolute top-2 left-3">IR</span>
                 <span className="font-bold text-6xl text-black mt-6">{verification.show ? verification.thermal : '---'}</span>
               </div>
               <div className={`flex-1 h-full rounded-lg px-1 py-1 flex items-center justify-center relative ${verification.show ? 'bg-[#3ce83c]' : 'bg-[#A9A5A2]'}`}>
