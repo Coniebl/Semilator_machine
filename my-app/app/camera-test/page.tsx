@@ -6,20 +6,26 @@ export default function CameraTestPage() {
   const router = useRouter();
   const [selectedLabel, setSelectedLabel] = useState("fingerlings");
   const [customLabel, setCustomLabel] = useState("");
-  const [serviceStatus, setServiceStatus] = useState<"connecting" | "online" | "fallback">("connecting");
+  const [burstCount, setBurstCount] = useState<number>(20);
+  const [serviceStatus, setServiceStatus] = useState<"connecting" | "online">("connecting");
   const [cameraMode, setCameraMode] = useState<string>("detecting");
+  const [colorSwap, setColorSwap] = useState<boolean>(true);
+  
+  // Burst progress state
   const [burstActive, setBurstActive] = useState(false);
+  const [burstRemaining, setBurstRemaining] = useState(0);
+  const [burstTarget, setBurstTarget] = useState(20);
+
   const [sessionCount, setSessionCount] = useState(0);
   const [lastSaved, setLastSaved] = useState<string | null>(null);
-  const [lastSavedPath, setLastSavedPath] = useState<string | null>(null);
-  const [datasetPath, setDatasetPath] = useState<string>("/dataset");
   const [feedbackMsg, setFeedbackMsg] = useState<{ text: string; type: "success" | "error" | "info" } | null>(null);
   const [isCapturing, setIsCapturing] = useState(false);
   const [flash, setFlash] = useState(false);
   const [isExiting, setIsExiting] = useState(false);
 
-  const videoRef = useRef<HTMLVideoElement | null>(null);
-  const streamRef = useRef<MediaStream | null>(null);
+  // Long-press handling for capture button
+  const longPressTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const isLongPressRef = useRef(false);
 
   const activeLabel = customLabel.trim() ? customLabel.trim().toLowerCase().replace(/\s+/g, "_") : selectedLabel;
 
@@ -27,17 +33,17 @@ export default function CameraTestPage() {
     setFeedbackMsg({ text, type });
     setTimeout(() => {
       setFeedbackMsg((prev) => (prev?.text === text ? null : prev));
-    }, 3500);
+    }, 3000);
   };
 
   const triggerFlash = () => {
     setFlash(true);
-    setTimeout(() => setFlash(false), 120);
+    setTimeout(() => setFlash(false), 100);
   };
 
   // Determine dynamic MJPEG preview URL
   const streamUrl = typeof window !== "undefined"
-    ? `http://${window.location.hostname}:5000/video_feed`
+    ? `http://${window.location.hostname}:5000/video_feed?t=${colorSwap}`
     : "http://localhost:5000/video_feed";
 
   const pingService = async () => {
@@ -48,22 +54,23 @@ export default function CameraTestPage() {
         if (data.running) {
           setServiceStatus("online");
           setBurstActive(data.burst_active || false);
+          setBurstRemaining(data.burst_remaining ?? 0);
+          setBurstTarget(data.burst_target || burstCount);
           setSessionCount(data.total_captured ?? 0);
+          if (data.color_swap !== undefined) setColorSwap(data.color_swap);
           if (data.last_saved) setLastSaved(data.last_saved);
           if (data.mode) setCameraMode(data.mode);
-          if (data.dataset_path) setDatasetPath(data.dataset_path);
           return true;
         }
       }
-    } catch (err) {}
+    } catch {}
     return false;
   };
 
-  // Auto-connect and poll camera service
   useEffect(() => {
     let interval: NodeJS.Timeout;
 
-    // Trigger auto-start of Python camera service via Next.js backend
+    // Auto-ping camera service
     fetch("/api/camera", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -71,33 +78,19 @@ export default function CameraTestPage() {
     }).catch(() => {});
 
     pingService();
-    interval = setInterval(pingService, 1000);
+    interval = setInterval(pingService, 600);
 
     return () => {
       clearInterval(interval);
-      // Stop burst on unmount if active
-      fetch("/api/camera", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "stop" }),
-        keepalive: true,
-      }).catch(() => {});
     };
   }, []);
 
-  const handleBack = async () => {
-    try {
-      await fetch("/api/camera", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "stop" }),
-      });
-    } catch {}
+  const handleBack = () => {
     router.push("/");
   };
 
   const handleCaptureSingle = async () => {
-    if (isCapturing) return;
+    if (isCapturing || burstActive) return;
     triggerFlash();
     setIsCapturing(true);
 
@@ -111,40 +104,86 @@ export default function CameraTestPage() {
       if (data.success) {
         setSessionCount(data.total_captured);
         setLastSaved(data.filename);
-        setLastSavedPath(data.filepath);
-        showFeedback(`📸 Saved: ${data.filename}`, "success");
+        showFeedback(`📸 Photo saved to local storage!`, "success");
       } else {
-        showFeedback(data.error || "Capture failed", "error");
+        showFeedback(data.error || "Capture error", "error");
       }
-    } catch (err: any) {
+    } catch {
       showFeedback("Offline capture error", "error");
     } finally {
       setIsCapturing(false);
     }
   };
 
-  const handleToggleBurst = async () => {
-    const action = burstActive ? "burst_stop" : "burst_start";
+  const handleStartBurst = async () => {
+    if (burstActive) return;
     try {
       const res = await fetch("/api/camera", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action, label: activeLabel }),
+        body: JSON.stringify({ action: "burst_start", label: activeLabel, count: burstCount }),
       });
       const data = await res.json();
       if (data.success) {
-        setBurstActive(data.burst_active);
-        if (data.burst_active) {
-          showFeedback(`⚡ Burst active (5 FPS) -> dataset/${activeLabel}/`, "info");
-        } else {
-          if (data.total_captured !== undefined) setSessionCount(data.total_captured);
-          showFeedback(`⏹ Burst stopped. Total captured: ${data.total_captured}`, "info");
-        }
+        setBurstActive(true);
+        setBurstRemaining(burstCount);
+        setBurstTarget(burstCount);
+        showFeedback(`⚡ Burst started: Shooting ${burstCount} photos!`, "info");
       } else {
-        showFeedback(data.error || "Burst toggle failed", "error");
+        showFeedback(data.error || "Burst start failed", "error");
       }
-    } catch (err) {
-      showFeedback("Burst control error", "error");
+    } catch {
+      showFeedback("Burst command error", "error");
+    }
+  };
+
+  const handleStopBurst = async () => {
+    try {
+      const res = await fetch("/api/camera", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "burst_stop" }),
+      });
+      const data = await res.json();
+      setBurstActive(false);
+      if (data.total_captured) setSessionCount(data.total_captured);
+      showFeedback("⏹ Burst stopped early", "info");
+    } catch {}
+  };
+
+  const handleToggleColor = async () => {
+    try {
+      const res = await fetch("/api/camera", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "color_toggle" }),
+      });
+      const data = await res.json();
+      if (data.success) {
+        setColorSwap(data.color_swap);
+        showFeedback(data.color_swap ? "🎨 Color Swap ON (BGR ↔ RGB)" : "🎨 Color Swap OFF (Native)", "info");
+      }
+    } catch {
+      showFeedback("Color toggle error", "error");
+    }
+  };
+
+  const handlePressStart = () => {
+    if (burstActive) return;
+    isLongPressRef.current = false;
+    longPressTimerRef.current = setTimeout(() => {
+      isLongPressRef.current = true;
+      handleStartBurst();
+    }, 450); // 450ms hold triggers burst
+  };
+
+  const handlePressEnd = () => {
+    if (longPressTimerRef.current) {
+      clearTimeout(longPressTimerRef.current);
+      longPressTimerRef.current = null;
+    }
+    if (!isLongPressRef.current && !burstActive) {
+      handleCaptureSingle();
     }
   };
 
@@ -152,15 +191,8 @@ export default function CameraTestPage() {
     if (!confirm("Are you sure you want to exit Kiosk mode and return to the Pi desktop?")) return;
     setIsExiting(true);
     try {
-      await fetch("/api/camera", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "stop" }),
-      });
       await fetch("/api/exit", { method: "POST" });
-    } catch (err) {
-      console.warn("Exit API failed:", err);
-    }
+    } catch {}
     window.close();
   };
 
@@ -170,6 +202,9 @@ export default function CameraTestPage() {
     { id: "dense_flow", label: "🌊 High Density" },
     { id: "debris", label: "🌿 Debris / Bubbles" },
   ];
+
+  const burstOptions = [20, 50, 100];
+  const burstProgressPercent = burstTarget > 0 ? Math.min(100, Math.round(((burstTarget - burstRemaining) / burstTarget) * 100)) : 0;
 
   return (
     <div className="w-full h-full bg-[#1e2022] text-white p-2.5 flex flex-col font-roboto select-none relative overflow-hidden">
@@ -205,27 +240,41 @@ export default function CameraTestPage() {
             <div className="flex items-center gap-1.5 text-xs text-gray-300">
               <span
                 className={`inline-block w-2.5 h-2.5 rounded-full ${
-                  serviceStatus === "online"
-                    ? "bg-green-500 animate-pulse"
-                    : "bg-yellow-500 animate-ping"
+                  serviceStatus === "online" ? "bg-green-500 animate-pulse" : "bg-yellow-500 animate-ping"
                 }`}
               />
               <span>
                 {serviceStatus === "online"
-                  ? `Hardware Service Online (${cameraMode.toUpperCase()}) - Offline Storage Ready`
+                  ? `Hardware Online (${cameraMode.toUpperCase()}) - Local Storage Ready`
                   : "Connecting to Camera Service on Port 5000..."}
               </span>
             </div>
           </div>
         </div>
 
-        <button
-          onClick={handleExitKiosk}
-          disabled={isExiting}
-          className="bg-red-600 hover:bg-red-700 text-white font-bold px-4 py-1.5 rounded-lg text-sm transition-colors shadow-lg flex items-center gap-1.5 active:scale-95"
-        >
-          {isExiting ? "Exiting..." : "❌ Exit Kiosk [Test]"}
-        </button>
+        <div className="flex items-center gap-2">
+          {/* Live Color Flip Toggle Button */}
+          <button
+            onClick={handleToggleColor}
+            className={`font-bold px-3 py-1.5 rounded-lg text-xs transition-colors border shadow flex items-center gap-1.5 active:scale-95 ${
+              colorSwap
+                ? "bg-indigo-600 hover:bg-indigo-700 text-white border-indigo-400"
+                : "bg-gray-700 hover:bg-gray-600 text-gray-200 border-gray-500"
+            }`}
+            title="Tap to swap Red and Blue channels if colors look inverted"
+          >
+            <span>🎨 Color Swap:</span>
+            <span className="font-mono">{colorSwap ? "BGR↔RGB [ON]" : "OFF"}</span>
+          </button>
+
+          <button
+            onClick={handleExitKiosk}
+            disabled={isExiting}
+            className="bg-red-600 hover:bg-red-700 text-white font-bold px-3.5 py-1.5 rounded-lg text-xs transition-colors shadow flex items-center gap-1 active:scale-95"
+          >
+            {isExiting ? "Exiting..." : "❌ Exit Kiosk"}
+          </button>
+        </div>
       </div>
 
       {/* Main Content: Split Grid */}
@@ -234,6 +283,7 @@ export default function CameraTestPage() {
         <div className="flex-1 bg-black rounded-xl overflow-hidden border border-white/10 relative flex items-center justify-center">
           {serviceStatus === "online" ? (
             <img
+              key={String(colorSwap)}
               src={streamUrl}
               alt="Live Camera Feed"
               className="w-full h-full object-contain"
@@ -242,7 +292,7 @@ export default function CameraTestPage() {
             <div className="flex flex-col items-center justify-center text-center p-6 text-gray-400 gap-2">
               <span className="w-8 h-8 border-4 border-yellow-400 border-t-transparent rounded-full animate-spin mb-1" />
               <p className="text-sm font-semibold text-gray-200">Connecting to Camera Hardware...</p>
-              <p className="text-xs text-gray-400">Listening for service on port 5000</p>
+              <p className="text-xs text-gray-400">Listening on port 5000</p>
               <button
                 onClick={() => pingService()}
                 className="mt-2 bg-[#3e434a] hover:bg-[#4e555e] text-white text-xs font-bold px-3 py-1.5 rounded-lg border border-white/20 active:scale-95"
@@ -252,32 +302,52 @@ export default function CameraTestPage() {
             </div>
           )}
 
-          {/* Burst Active Badge */}
+          {/* Burst Active Overlay with Live Progress Bar */}
           {burstActive && (
-            <div className="absolute top-2.5 left-2.5 bg-red-600 text-white font-bold px-3 py-1 rounded-lg flex items-center gap-2 text-sm shadow-lg animate-pulse">
-              <span className="w-2 h-2 bg-white rounded-full animate-ping" />
-              BURST RECORDING ACTIVE (5 FPS)
+            <div className="absolute top-3 left-3 right-3 bg-black/85 backdrop-blur-md border border-red-500/80 p-3 rounded-xl shadow-2xl flex flex-col gap-2 animate-fade-in z-30">
+              <div className="flex justify-between items-center text-sm font-bold">
+                <span className="text-red-400 flex items-center gap-2">
+                  <span className="w-3 h-3 bg-red-500 rounded-full animate-ping" />
+                  BURST SHOOTING IN PROGRESS
+                </span>
+                <span className="font-mono text-yellow-300">
+                  {burstTarget - burstRemaining} / {burstTarget} photos ({burstProgressPercent}%)
+                </span>
+                <button
+                  onClick={handleStopBurst}
+                  className="bg-red-600 hover:bg-red-700 text-white text-xs px-2.5 py-1 rounded-lg font-bold"
+                >
+                  ⏹ Stop Early
+                </button>
+              </div>
+              <div className="w-full bg-gray-800 h-3 rounded-full overflow-hidden border border-white/20">
+                <div
+                  className="bg-gradient-to-r from-amber-500 to-red-500 h-full transition-all duration-150"
+                  style={{ width: `${burstProgressPercent}%` }}
+                />
+              </div>
             </div>
           )}
 
-          {/* Live Overlay Stats */}
-          <div className="absolute bottom-2 left-2 right-2 bg-black/75 backdrop-blur-md px-3 py-1.5 rounded-lg flex justify-between items-center text-xs border border-white/10">
-            <span className="truncate max-w-[30%]">
+          {/* Clean Bottom Overlay */}
+          <div className="absolute bottom-2 left-2 right-2 bg-black/75 backdrop-blur-md px-3.5 py-2 rounded-lg flex justify-between items-center text-xs border border-white/10 z-20">
+            <span className="truncate max-w-[32%]">
               Category: <strong className="text-green-400 font-mono">{activeLabel}</strong>
             </span>
-            <span>
-              Total Dataset: <strong className="text-yellow-400 text-sm font-mono">{sessionCount}</strong> photos
+            <span className="truncate max-w-[32%]">
+              Total Saved: <strong className="text-yellow-400 text-sm font-mono">{sessionCount}</strong> photos
             </span>
-            <span className="truncate max-w-[40%] text-right">
-              Last: <strong className="text-gray-300 font-mono">{lastSaved || "None"}</strong>
+            <span className="text-right text-gray-300 flex items-center gap-1.5">
+              <span className="text-green-400 font-bold">💾</span>
+              <span>Saved to Local Storage (Offline)</span>
             </span>
           </div>
         </div>
 
         {/* Right Column: Touch Controls & Dataset Tagging */}
         <div className="w-[310px] flex flex-col gap-2 shrink-0">
-          {/* Label Selection Card */}
-          <div className="bg-[#2d3035] p-3 rounded-xl border border-white/10">
+          {/* Card 1: Category Selection */}
+          <div className="bg-[#2d3035] p-2.5 rounded-xl border border-white/10">
             <h2 className="text-xs font-bold text-gray-300 mb-1.5 uppercase tracking-wider">1. Select Category / Tag</h2>
             <div className="grid grid-cols-2 gap-1.5 mb-2">
               {categories.map((cat) => (
@@ -287,7 +357,7 @@ export default function CameraTestPage() {
                     setSelectedLabel(cat.id);
                     setCustomLabel("");
                   }}
-                  className={`py-1.5 px-2.5 rounded-lg font-bold text-left text-xs transition-all truncate ${
+                  className={`py-1.5 px-2 rounded-lg font-bold text-left text-xs transition-all truncate ${
                     selectedLabel === cat.id && !customLabel
                       ? "bg-green-600 text-white shadow ring-2 ring-white/80"
                       : "bg-[#3e434a] text-gray-200 hover:bg-[#4a5058]"
@@ -298,67 +368,84 @@ export default function CameraTestPage() {
               ))}
             </div>
 
-            <div>
-              <input
-                type="text"
-                placeholder="Or custom tag (e.g. batch_fry_1)..."
-                value={customLabel}
-                onChange={(e) => setCustomLabel(e.target.value)}
-                className="w-full bg-[#1e2022] border border-white/20 rounded-lg px-2.5 py-1.5 text-white font-mono text-xs focus:outline-none focus:border-green-500"
-              />
+            <input
+              type="text"
+              placeholder="Or custom tag (e.g. batch_fry_1)..."
+              value={customLabel}
+              onChange={(e) => setCustomLabel(e.target.value)}
+              className="w-full bg-[#1e2022] border border-white/20 rounded-lg px-2.5 py-1 text-white font-mono text-xs focus:outline-none focus:border-green-500"
+            />
+          </div>
+
+          {/* Card 2: Burst Count Selector */}
+          <div className="bg-[#2d3035] p-2.5 rounded-xl border border-white/10">
+            <h2 className="text-xs font-bold text-gray-300 mb-1.5 uppercase tracking-wider">2. Burst Shoot Count</h2>
+            <div className="grid grid-cols-3 gap-1.5">
+              {burstOptions.map((opt) => (
+                <button
+                  key={opt}
+                  onClick={() => setBurstCount(opt)}
+                  className={`py-1.5 rounded-lg font-bold text-xs transition-all flex items-center justify-center gap-1 ${
+                    burstCount === opt
+                      ? "bg-amber-600 text-white shadow ring-2 ring-white/80"
+                      : "bg-[#3e434a] text-gray-200 hover:bg-[#4a5058]"
+                  }`}
+                >
+                  <span>⚡</span> {opt} Shots
+                </button>
+              ))}
             </div>
           </div>
 
-          {/* Capture Trigger Card */}
+          {/* Card 3: Capture Trigger Actions */}
           <div className="bg-[#2d3035] p-3 rounded-xl border border-white/10 flex-1 flex flex-col justify-between">
-            <h2 className="text-xs font-bold text-gray-300 mb-1 uppercase tracking-wider">2. Capture Offline Samples</h2>
+            <h2 className="text-xs font-bold text-gray-300 mb-1 uppercase tracking-wider">3. Capture Images</h2>
 
             <div className="flex flex-col gap-2 my-auto">
-              {/* Single Shot Button */}
+              {/* Dual Action Photo Button: Tap for 1 shot, Hold for Burst */}
               <button
-                onClick={handleCaptureSingle}
-                disabled={serviceStatus !== "online" || isCapturing}
-                className={`w-full font-bold py-3 rounded-xl text-lg shadow-md flex items-center justify-center gap-2 transition-all active:scale-98 ${
-                  serviceStatus === "online"
+                onMouseDown={handlePressStart}
+                onMouseUp={handlePressEnd}
+                onTouchStart={handlePressStart}
+                onTouchEnd={handlePressEnd}
+                disabled={serviceStatus !== "online" || burstActive}
+                className={`w-full font-bold py-3.5 rounded-xl text-lg shadow-md flex flex-col items-center justify-center gap-0.5 transition-all active:scale-95 ${
+                  serviceStatus === "online" && !burstActive
                     ? "bg-green-600 hover:bg-green-700 text-white cursor-pointer"
                     : "bg-gray-600 text-gray-400 cursor-not-allowed"
                 }`}
               >
-                {isCapturing ? "SAVING..." : "📸 TAKE PHOTO"}
+                <div className="flex items-center gap-2">
+                  <span>📸</span>
+                  <span>{isCapturing ? "SAVING..." : "TAKE PHOTO"}</span>
+                </div>
+                <span className="text-[10px] text-green-200 font-normal">
+                  (Tap: 1 Photo • Hold: {burstCount} Burst)
+                </span>
               </button>
 
-              {/* Continuous Burst Button */}
+              {/* Dedicated Direct Burst Button */}
               <button
-                onClick={handleToggleBurst}
-                disabled={serviceStatus !== "online"}
-                className={`w-full font-bold py-3 rounded-xl text-lg shadow-md flex items-center justify-center gap-2 transition-all active:scale-98 ${
-                  serviceStatus !== "online"
-                    ? "bg-gray-600 text-gray-400 cursor-not-allowed"
-                    : burstActive
-                    ? "bg-red-600 hover:bg-red-700 animate-pulse text-white cursor-pointer"
-                    : "bg-amber-600 hover:bg-amber-700 text-white cursor-pointer"
+                onClick={handleStartBurst}
+                disabled={serviceStatus !== "online" || burstActive}
+                className={`w-full font-bold py-2.5 rounded-xl text-sm shadow-md flex items-center justify-center gap-2 transition-all active:scale-95 ${
+                  serviceStatus === "online" && !burstActive
+                    ? "bg-amber-600 hover:bg-amber-700 text-white cursor-pointer"
+                    : "bg-gray-600 text-gray-400 cursor-not-allowed"
                 }`}
               >
-                {burstActive ? "⏹ STOP BURST" : "⚡ START BURST (5/s)"}
+                <span>⚡</span>
+                <span>BURST SHOOT ({burstCount} SHOTS)</span>
               </button>
             </div>
 
-            {/* Offline Storage Path Details */}
-            <div className="bg-[#1e2022] p-2.5 rounded-lg border border-white/10 text-[11px] text-gray-400 space-y-1">
-              <div className="flex items-center justify-between text-gray-300 font-semibold">
-                <span>📁 Offline Target Folder:</span>
-                <span className="text-[10px] text-green-400 bg-green-950/80 px-1.5 py-0.5 rounded border border-green-800">
-                  100% OFFLINE
-                </span>
+            {/* Offline Local Storage Guarantee Footer */}
+            <div className="bg-[#1e2022] p-2 rounded-lg border border-white/10 text-[11px] text-gray-300 flex items-center gap-2">
+              <span className="text-base text-green-400">💾</span>
+              <div>
+                <div className="font-semibold text-white">Auto-saved to Local Storage</div>
+                <div className="text-[10px] text-gray-400">Captures store directly on your device offline.</div>
               </div>
-              <div className="font-mono text-green-400 truncate text-[10px]">
-                {datasetPath}/{activeLabel}/
-              </div>
-              {lastSavedPath && (
-                <div className="text-[10px] text-gray-400 truncate">
-                  Last saved: <span className="font-mono text-gray-300">{lastSavedPath}</span>
-                </div>
-              )}
             </div>
           </div>
         </div>
