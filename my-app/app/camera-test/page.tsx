@@ -40,7 +40,26 @@ export default function CameraTestPage() {
     ? `http://${window.location.hostname}:5000/video_feed`
     : "http://localhost:5000/video_feed";
 
-  // Auto-start camera service on mount, poll via same-origin /api/camera, auto-stop on leave
+  const pingService = async () => {
+    try {
+      const res = await fetch("/api/camera", { cache: "no-store" });
+      if (res.ok) {
+        const data = await res.json();
+        if (data.running) {
+          setServiceStatus("online");
+          setBurstActive(data.burst_active || false);
+          setSessionCount(data.total_captured ?? 0);
+          if (data.last_saved) setLastSaved(data.last_saved);
+          if (data.mode) setCameraMode(data.mode);
+          if (data.dataset_path) setDatasetPath(data.dataset_path);
+          return true;
+        }
+      }
+    } catch (err) {}
+    return false;
+  };
+
+  // Auto-connect and poll camera service
   useEffect(() => {
     let interval: NodeJS.Timeout;
 
@@ -49,35 +68,14 @@ export default function CameraTestPage() {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ action: "start" }),
-    }).catch((err) => console.warn("Failed to auto-start camera service:", err));
+    }).catch(() => {});
 
-    const checkService = async () => {
-      try {
-        const res = await fetch("/api/camera", { cache: "no-store" });
-        if (res.ok) {
-          const data = await res.json();
-          if (data.running) {
-            setServiceStatus("online");
-            setBurstActive(data.burst_active || false);
-            setSessionCount(data.total_captured ?? 0);
-            if (data.last_saved) setLastSaved(data.last_saved);
-            if (data.mode) setCameraMode(data.mode);
-            if (data.dataset_path) setDatasetPath(data.dataset_path);
-            return;
-          }
-        }
-      } catch (err) {
-        // network or server temporary unavailable
-      }
-      setServiceStatus((prev) => (prev === "online" ? "connecting" : prev));
-    };
-
-    checkService();
-    interval = setInterval(checkService, 1000);
+    pingService();
+    interval = setInterval(pingService, 1000);
 
     return () => {
       clearInterval(interval);
-      // Auto-stop Python camera service on unmount to release hardware
+      // Stop burst on unmount if active
       fetch("/api/camera", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -97,29 +95,6 @@ export default function CameraTestPage() {
     } catch {}
     router.push("/");
   };
-
-  // WebRTC Browser Webcam fallback if service status manually switched to fallback
-  useEffect(() => {
-    if (serviceStatus === "fallback" && !streamRef.current) {
-      navigator.mediaDevices?.getUserMedia({ video: { width: 1280, height: 720 } })
-        .then((stream) => {
-          streamRef.current = stream;
-          if (videoRef.current) {
-            videoRef.current.srcObject = stream;
-          }
-        })
-        .catch((err) => {
-          console.warn("Browser camera access denied:", err);
-        });
-    }
-
-    return () => {
-      if (streamRef.current) {
-        streamRef.current.getTracks().forEach((track) => track.stop());
-        streamRef.current = null;
-      }
-    };
-  }, [serviceStatus]);
 
   const handleCaptureSingle = async () => {
     if (isCapturing) return;
@@ -160,7 +135,7 @@ export default function CameraTestPage() {
       if (data.success) {
         setBurstActive(data.burst_active);
         if (data.burst_active) {
-          showFeedback(`⚡ Burst started (5 FPS) -> dataset/${activeLabel}/`, "info");
+          showFeedback(`⚡ Burst active (5 FPS) -> dataset/${activeLabel}/`, "info");
         } else {
           if (data.total_captured !== undefined) setSessionCount(data.total_captured);
           showFeedback(`⏹ Burst stopped. Total captured: ${data.total_captured}`, "info");
@@ -232,17 +207,13 @@ export default function CameraTestPage() {
                 className={`inline-block w-2.5 h-2.5 rounded-full ${
                   serviceStatus === "online"
                     ? "bg-green-500 animate-pulse"
-                    : serviceStatus === "connecting"
-                    ? "bg-yellow-500 animate-ping"
-                    : "bg-blue-400"
+                    : "bg-yellow-500 animate-ping"
                 }`}
               />
               <span>
                 {serviceStatus === "online"
                   ? `Hardware Service Online (${cameraMode.toUpperCase()}) - Offline Storage Ready`
-                  : serviceStatus === "connecting"
-                  ? "Initializing Camera Service..."
-                  : "Browser Webcam (Fallback)"}
+                  : "Connecting to Camera Service on Port 5000..."}
               </span>
             </div>
           </div>
@@ -268,10 +239,16 @@ export default function CameraTestPage() {
               className="w-full h-full object-contain"
             />
           ) : (
-            <div className="flex flex-col items-center justify-center text-center p-6 text-gray-400">
-              <span className="w-8 h-8 border-4 border-yellow-400 border-t-transparent rounded-full animate-spin mb-3" />
+            <div className="flex flex-col items-center justify-center text-center p-6 text-gray-400 gap-2">
+              <span className="w-8 h-8 border-4 border-yellow-400 border-t-transparent rounded-full animate-spin mb-1" />
               <p className="text-sm font-semibold text-gray-200">Connecting to Camera Hardware...</p>
-              <p className="text-xs text-gray-500 mt-1">Starting Python Picamera2 service offline</p>
+              <p className="text-xs text-gray-400">Listening for service on port 5000</p>
+              <button
+                onClick={() => pingService()}
+                className="mt-2 bg-[#3e434a] hover:bg-[#4e555e] text-white text-xs font-bold px-3 py-1.5 rounded-lg border border-white/20 active:scale-95"
+              >
+                🔄 Retry Connection
+              </button>
             </div>
           )}
 

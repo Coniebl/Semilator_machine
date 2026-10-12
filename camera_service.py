@@ -121,40 +121,48 @@ class CameraManager:
         if arr is None:
             return None
 
-        if len(arr.shape) == 3:
-            channels = arr.shape[2]
-            if channels == 3:
-                # BGR -> RGB
-                if HAS_CV2:
-                    rgb_arr = cv2.cvtColor(arr, cv2.COLOR_BGR2RGB)
-                elif HAS_NUMPY:
-                    rgb_arr = np.ascontiguousarray(arr[:, :, ::-1])
+        try:
+            if len(arr.shape) == 3:
+                channels = arr.shape[2]
+                if channels == 3:
+                    # BGR -> RGB
+                    if HAS_CV2:
+                        rgb_arr = cv2.cvtColor(arr, cv2.COLOR_BGR2RGB)
+                    elif HAS_NUMPY:
+                        rgb_arr = np.ascontiguousarray(arr[:, :, ::-1])
+                    else:
+                        rgb_arr = arr[:, :, ::-1]
+                elif channels == 4:
+                    # BGRA/XBGR -> RGB
+                    if HAS_CV2:
+                        rgb_arr = cv2.cvtColor(arr, cv2.COLOR_BGRA2RGB)
+                    elif HAS_NUMPY:
+                        rgb_arr = np.ascontiguousarray(arr[:, :, [2, 1, 0]])
+                    else:
+                        rgb_arr = arr[:, :, [2, 1, 0]]
                 else:
-                    rgb_arr = arr[:, :, ::-1]
-            elif channels == 4:
-                # BGRA/XBGR -> RGB
-                if HAS_CV2:
-                    rgb_arr = cv2.cvtColor(arr, cv2.COLOR_BGRA2RGB)
-                elif HAS_NUMPY:
-                    rgb_arr = np.ascontiguousarray(arr[:, :, [2, 1, 0]])
-                else:
-                    rgb_arr = arr[:, :, [2, 1, 0]]
+                    rgb_arr = arr
             else:
                 rgb_arr = arr
-        else:
-            rgb_arr = arr
 
-        return Image.fromarray(rgb_arr)
+            return Image.fromarray(rgb_arr)
+        except Exception as e:
+            print(f"[CONVERT ERROR] {e}")
+            try:
+                return Image.fromarray(arr)
+            except Exception:
+                return None
 
     def capture_new_frame(self):
-        """Captures a single raw frame and returns (jpeg_bytes, PIL_Image)."""
+        """Captures a single raw frame and returns (jpeg_bytes, PIL_Image). Never returns None."""
         if self.mode == "picamera2" and self.picam2:
             try:
                 arr = self.picam2.capture_array()
                 img = self._convert_to_rgb_image(arr)
-                buf = io.BytesIO()
-                img.save(buf, format="JPEG", quality=80)
-                return buf.getvalue(), img
+                if img is not None:
+                    buf = io.BytesIO()
+                    img.save(buf, format="JPEG", quality=80)
+                    return buf.getvalue(), img
             except Exception as e:
                 print(f"[PICAM CAPTURE ERROR] {e}")
 
@@ -162,24 +170,19 @@ class CameraManager:
             try:
                 ret, frame = self.cap.read()
                 if ret:
-                    if HAS_CV2:
-                        rgb_arr = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                    elif HAS_NUMPY:
-                        rgb_arr = np.ascontiguousarray(frame[:, :, ::-1])
-                    else:
-                        rgb_arr = frame[:, :, ::-1]
-                    img = Image.fromarray(rgb_arr)
-                    buf = io.BytesIO()
-                    img.save(buf, format="JPEG", quality=80)
-                    return buf.getvalue(), img
+                    img = self._convert_to_rgb_image(frame)
+                    if img is not None:
+                        buf = io.BytesIO()
+                        img.save(buf, format="JPEG", quality=80)
+                        return buf.getvalue(), img
             except Exception as e:
                 print(f"[OPENCV CAPTURE ERROR] {e}")
 
-        # Fallback Mock Frame with live counter and timestamp
+        # Always return a valid frame so unpacking in _loop never fails
         img = Image.new("RGB", (640, 480), color=(26, 54, 93))
         draw = ImageDraw.Draw(img)
         t_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
-        draw.text((30, 30), "SEMILATOR CAMERA STREAM (MOCK MODE)", fill=(255, 255, 255))
+        draw.text((30, 30), "SEMILATOR CAMERA STREAM", fill=(255, 255, 255))
         draw.text((30, 80), f"Mode: {self.mode}", fill=(200, 200, 200))
         draw.text((30, 130), f"Time: {t_str}", fill=(255, 255, 0))
         draw.text((30, 180), f"Active Label: {self.active_label}", fill=(100, 255, 100))

@@ -2,7 +2,7 @@ import { spawn, exec } from "child_process";
 import path from "path";
 import { NextResponse } from "next/server";
 
-// Keep a global process reference across requests
+// Global child process reference if spawned directly
 let cameraChildProcess: any = null;
 
 async function getCameraStatus(): Promise<any> {
@@ -18,11 +18,38 @@ async function getCameraStatus(): Promise<any> {
   return null;
 }
 
+function startCameraDaemon(): void {
+  // If on Linux, try starting the systemd service first
+  if (process.platform === "linux") {
+    try {
+      exec("sudo systemctl start camera.service 2>/dev/null || systemctl start camera.service 2>/dev/null");
+    } catch {}
+  }
+
+  // Also spawn directly in the background with detached=true
+  try {
+    const scriptPath = path.resolve(process.cwd(), "..", "camera_service.py");
+    const pythonCmd = process.platform === "win32" ? "python" : "python3";
+    console.log(`[CAMERA API] Spawning daemon: ${pythonCmd} ${scriptPath}`);
+
+    cameraChildProcess = spawn(pythonCmd, [scriptPath], {
+      detached: true,
+      stdio: "ignore",
+    });
+    cameraChildProcess.unref();
+  } catch (err) {
+    console.warn("[CAMERA API] Spawn error:", err);
+  }
+}
+
 export async function GET() {
   const status = await getCameraStatus();
   if (status) {
     return NextResponse.json({ running: true, ...status });
   }
+
+  // Try auto-starting if not responding
+  startCameraDaemon();
   return NextResponse.json({ running: false, mode: "offline", total_captured: 0 });
 }
 
@@ -32,51 +59,31 @@ export async function POST(req: Request) {
     const { action, label } = body;
 
     if (action === "start") {
-      const currentStatus = await getCameraStatus();
+      let currentStatus = await getCameraStatus();
       if (currentStatus) {
-        return NextResponse.json({ success: true, message: "Camera service already running", ...currentStatus });
+        return NextResponse.json({ success: true, message: "Camera service active", ...currentStatus });
       }
 
-      const scriptPath = path.resolve(process.cwd(), "..", "camera_service.py");
-      const pythonCmd = process.platform === "win32" ? "python" : "python3";
-
-      console.log(`[CAMERA API] Starting camera service: ${pythonCmd} ${scriptPath}`);
-      cameraChildProcess = spawn(pythonCmd, [scriptPath], {
-        detached: false,
-        stdio: "ignore",
-      });
-
-      cameraChildProcess.unref();
+      startCameraDaemon();
 
       // Poll until port 5000 responds (up to 4 seconds)
       for (let i = 0; i < 20; i++) {
         await new Promise((r) => setTimeout(r, 200));
-        const status = await getCameraStatus();
-        if (status) {
-          return NextResponse.json({ success: true, message: "Camera service started successfully", ...status });
+        currentStatus = await getCameraStatus();
+        if (currentStatus) {
+          return NextResponse.json({ success: true, message: "Camera service connected", ...currentStatus });
         }
       }
 
-      return NextResponse.json({ success: true, message: "Camera service spawned, connecting..." });
+      return NextResponse.json({ success: false, message: "Camera service starting, please wait..." });
     }
 
     if (action === "stop") {
-      console.log("[CAMERA API] Stopping camera service...");
-
-      if (cameraChildProcess) {
-        try {
-          cameraChildProcess.kill("SIGTERM");
-        } catch {}
-        cameraChildProcess = null;
-      }
-
-      if (process.platform === "win32") {
-        exec("taskkill /F /FI \"WINDOWTITLE eq *camera_service*\" 2>nul || exit 0");
-      } else {
-        exec("pkill -f camera_service.py || true");
-      }
-
-      return NextResponse.json({ success: true, message: "Camera service stopped" });
+      // Instead of killing the hardware camera process, simply halt any active burst
+      try {
+        await fetch("http://127.0.0.1:5000/burst/stop", { method: "POST" });
+      } catch {}
+      return NextResponse.json({ success: true, message: "Camera burst stopped" });
     }
 
     if (action === "capture") {
