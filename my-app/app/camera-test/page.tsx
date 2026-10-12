@@ -18,9 +18,16 @@ export default function CameraTestPage() {
 
   const activeLabel = customLabel.trim() ? customLabel.trim().toLowerCase().replace(/\s+/g, "_") : selectedLabel;
 
-  // Poll Python Camera Service status
+  // Auto-start camera service on mount, and auto-stop when leaving
   useEffect(() => {
     let interval: NodeJS.Timeout;
+
+    // Trigger auto-start of Python camera service
+    fetch("/api/camera", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "start" }),
+    }).catch((err) => console.warn("Failed to auto-start camera service:", err));
 
     const checkService = async () => {
       try {
@@ -33,16 +40,35 @@ export default function CameraTestPage() {
           return;
         }
       } catch (err) {
-        // Fallback to browser webcam
-        setServiceStatus("fallback");
+        setServiceStatus((prev) => (prev === "online" ? "connecting" : prev));
       }
     };
 
     checkService();
-    interval = setInterval(checkService, 1500);
+    interval = setInterval(checkService, 1000);
 
-    return () => clearInterval(interval);
+    return () => {
+      clearInterval(interval);
+      // Auto-stop Python camera service on unmount
+      fetch("/api/camera", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "stop" }),
+        keepalive: true,
+      }).catch(() => {});
+    };
   }, []);
+
+  const handleBack = async () => {
+    try {
+      await fetch("/api/camera", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "stop" }),
+      });
+    } catch {}
+    router.push("/");
+  };
 
   // WebRTC Fallback if Python service isn't active
   useEffect(() => {
@@ -87,6 +113,8 @@ export default function CameraTestPage() {
           setLastSaved(data.filename);
         }
       } else {
+        // Trigger start if not running yet
+        fetch("/api/camera", { method: "POST", body: JSON.stringify({ action: "start" }) }).catch(() => {});
         // Browser fallback: download snapshot
         if (videoRef.current) {
           const canvas = document.createElement("canvas");
@@ -112,7 +140,13 @@ export default function CameraTestPage() {
 
   const handleToggleBurst = async () => {
     if (serviceStatus !== "online") {
-      alert("Burst mode requires the local Python Camera Service (port 5000).");
+      // Auto-start camera if offline
+      await fetch("/api/camera", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "start" }),
+      }).catch(() => {});
+      alert("Camera service is connecting... Please tap again in 2 seconds.");
       return;
     }
 
@@ -137,6 +171,11 @@ export default function CameraTestPage() {
     if (!confirm("Are you sure you want to exit Kiosk mode and return to the Pi desktop?")) return;
     setIsExiting(true);
     try {
+      await fetch("/api/camera", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "stop" }),
+      });
       await fetch("/api/exit", { method: "POST" });
     } catch (err) {
       console.warn("Exit API failed:", err);
@@ -161,7 +200,7 @@ export default function CameraTestPage() {
       <div className="flex flex-row justify-between items-center bg-[#2d3035] px-4 py-2 rounded-xl mb-2 border border-white/10">
         <div className="flex flex-row items-center gap-3">
           <button
-            onClick={() => router.push("/")}
+            onClick={handleBack}
             className="bg-[#4a4f57] hover:bg-[#5a606a] text-white font-bold px-3 py-1.5 rounded-lg text-sm flex items-center gap-1.5"
           >
             ← Back

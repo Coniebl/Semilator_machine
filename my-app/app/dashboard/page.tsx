@@ -49,6 +49,147 @@ const ProfileAvatar = ({ imageUrl, className = "" }: { imageUrl?: string, classN
   );
 };
 
+const SwipeableHistoryItem = ({
+  item,
+  index,
+  totalLength,
+  isOpen,
+  onOpen,
+  onClose,
+  onDelete,
+}: {
+  item: any;
+  index: number;
+  totalLength: number;
+  isOpen: boolean;
+  onOpen: () => void;
+  onClose: () => void;
+  onDelete: (id: string) => void;
+}) => {
+  const [dragOffset, setDragOffset] = useState<number | null>(null);
+  const startXRef = useRef<number | null>(null);
+  const startYRef = useRef<number | null>(null);
+  const isDraggingRef = useRef(false);
+  const directionRef = useRef<'horizontal' | 'vertical' | null>(null);
+
+  const BUTTON_WIDTH = 80;
+
+  const handleStart = (clientX: number, clientY: number) => {
+    startXRef.current = clientX;
+    startYRef.current = clientY;
+    isDraggingRef.current = true;
+    directionRef.current = null;
+  };
+
+  const handleMove = (clientX: number, clientY: number) => {
+    if (!isDraggingRef.current || startXRef.current === null || startYRef.current === null) return;
+    const diffX = clientX - startXRef.current;
+    const diffY = clientY - startYRef.current;
+
+    if (directionRef.current === null) {
+      if (Math.abs(diffX) > 6 || Math.abs(diffY) > 6) {
+        if (Math.abs(diffX) > Math.abs(diffY)) {
+          directionRef.current = 'horizontal';
+        } else {
+          directionRef.current = 'vertical';
+        }
+      }
+    }
+
+    if (directionRef.current === 'vertical') return;
+
+    if (directionRef.current === 'horizontal') {
+      const baseOffset = isOpen ? -BUTTON_WIDTH : 0;
+      let newOffset = baseOffset + diffX;
+      if (newOffset > 0) newOffset = 0;
+      if (newOffset < -BUTTON_WIDTH) {
+        newOffset = -BUTTON_WIDTH + (newOffset + BUTTON_WIDTH) * 0.2;
+      }
+      setDragOffset(newOffset);
+    }
+  };
+
+  const handleEnd = () => {
+    if (!isDraggingRef.current) return;
+    isDraggingRef.current = false;
+    startXRef.current = null;
+    startYRef.current = null;
+
+    if (directionRef.current === 'horizontal' && dragOffset !== null) {
+      if (dragOffset < -BUTTON_WIDTH / 2) {
+        onOpen();
+      } else {
+        onClose();
+      }
+    }
+    directionRef.current = null;
+    setDragOffset(null);
+  };
+
+  const translateX = dragOffset !== null ? dragOffset : (isOpen ? -BUTTON_WIDTH : 0);
+
+  return (
+    <div className="relative mb-2 overflow-hidden rounded-lg bg-[#BA2A23] select-none">
+      {/* Background Revealed Delete Action */}
+      <button
+        onClick={() => onDelete(item.id)}
+        className="absolute right-0 top-0 bottom-0 w-20 bg-[#BA2A23] hover:bg-[#9a211a] active:bg-[#7a1812] text-white font-bold flex flex-col items-center justify-center text-xs gap-1 transition-colors"
+      >
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+          <polyline points="3 6 5 6 21 6" />
+          <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+        </svg>
+        <span>Delete</span>
+      </button>
+
+      {/* Foreground Sliding Entry Card */}
+      <div
+        style={{
+          transform: `translateX(${translateX}px)`,
+          transition: dragOffset !== null ? "none" : "transform 0.25s cubic-bezier(0.2, 0.8, 0.2, 1)",
+        }}
+        onTouchStart={(e) => handleStart(e.touches[0].clientX, e.touches[0].clientY)}
+        onTouchMove={(e) => handleMove(e.touches[0].clientX, e.touches[0].clientY)}
+        onTouchEnd={handleEnd}
+        onTouchCancel={handleEnd}
+        onMouseDown={(e) => handleStart(e.clientX, e.clientY)}
+        onMouseMove={(e) => {
+          if (isDraggingRef.current) handleMove(e.clientX, e.clientY);
+        }}
+        onMouseUp={handleEnd}
+        onMouseLeave={() => {
+          if (isDraggingRef.current) handleEnd();
+        }}
+        onClick={() => {
+          if (isOpen && dragOffset === null) {
+            onClose();
+          }
+        }}
+        className="relative flex flex-row bg-[#E8E8E8] items-center py-1.5 cursor-grab active:cursor-grabbing"
+      >
+        <div className="bg-[#BA2A23] w-6 h-6 rounded-full flex items-center justify-center m-2 shrink-0">
+          <span className="font-bold text-white text-xs">{totalLength - index}</span>
+        </div>
+        <div className="flex-1 px-2">
+          <div className="flex flex-row justify-around mb-0.5">
+            <span className="font-bold text-xs text-gray-600">TO</span>
+            <span className="font-bold text-xs text-gray-600">COUNT</span>
+            <span className="font-bold text-xs text-gray-600">AMOUNT</span>
+          </div>
+          <div className="flex flex-row justify-around items-center">
+            <span className="font-bold text-xl text-[#0088ff]">{item.buyerName || 'Buyer'}</span>
+            <span className="font-bold text-xl text-[#1eb81e]">{item.count}</span>
+            <span className="font-bold text-xl text-[#b8ab17]">₱ {parseFloat(item.amount || 0).toFixed(2)}</span>
+          </div>
+          <div className="font-bold text-center text-xs text-[#666666] mt-1">
+            {item.date}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+};
+
 function DashboardContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -59,6 +200,7 @@ function DashboardContent() {
   const [buyerName, setBuyerName] = useState('Buyer');
   const [sellerPic, setSellerPic] = useState<string | null>(null);
   const [buyerPic, setBuyerPic] = useState<string | null>(null);
+  const [swipedItemId, setSwipedItemId] = useState<string | null>(null);
 
   useEffect(() => {
     const fetchProfiles = async () => {
@@ -485,32 +627,18 @@ function DashboardContent() {
             <h2 className="font-bold text-white text-base mb-1.5">DAILY TRANSACTION HISTORY</h2>
             <div className="flex-1 overflow-y-auto no-scrollbar pr-1">
               {history.map((item, index) => (
-                <div key={item.id} className="group relative flex flex-row bg-[#E8E8E8] rounded-lg mb-2 overflow-hidden items-center py-1.5">
-                  <div className="bg-[#BA2A23] w-6 h-6 rounded-full flex items-center justify-center m-2 shrink-0">
-                    <span className="font-bold text-white text-xs">{history.length - index}</span>
-                  </div>
-                  <div className="flex-1 px-2">
-                    <div className="flex flex-row justify-around mb-0.5">
-                      <span className="font-bold text-xs text-gray-600">TO</span>
-                      <span className="font-bold text-xs text-gray-600">COUNT</span>
-                      <span className="font-bold text-xs text-gray-600">AMOUNT</span>
-                    </div>
-                    <div className="flex flex-row justify-around items-center">
-                      <span className="font-bold text-xl text-[#0088ff]">{item.buyerName || 'Buyer'}</span>
-                      <span className="font-bold text-xl text-[#1eb81e]">{item.count}</span>
-                      <span className="font-bold text-xl text-[#b8ab17]">₱ {parseFloat(item.amount || 0).toFixed(2)}</span>
-                    </div>
-                    <div className="font-bold text-center text-xs text-[#666666] mt-1">
-                      {item.date}
-                    </div>
-                  </div>
-                  <button 
-                    className="absolute right-0 top-0 bottom-0 w-20 bg-[#BA2A23] text-white font-bold translate-x-full group-hover:translate-x-0 transition-transform duration-300 flex items-center justify-center text-sm"
-                    onClick={() => handleDeleteHistory(item.id)}
-                  >
-                    Delete
-                  </button>
-                </div>
+                <SwipeableHistoryItem
+                  key={item.id}
+                  item={item}
+                  index={index}
+                  totalLength={history.length}
+                  isOpen={swipedItemId === item.id}
+                  onOpen={() => setSwipedItemId(item.id)}
+                  onClose={() => {
+                    if (swipedItemId === item.id) setSwipedItemId(null);
+                  }}
+                  onDelete={handleDeleteHistory}
+                />
               ))}
               <div className="font-bold text-center text-white/80 text-sm mt-3 mb-1">
                 Old entries in app
