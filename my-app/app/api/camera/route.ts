@@ -5,28 +5,36 @@ import { NextResponse } from "next/server";
 // Keep a global process reference across requests
 let cameraChildProcess: any = null;
 
-async function isCameraRunning(): Promise<boolean> {
+async function getCameraStatus(): Promise<any> {
   try {
-    const res = await fetch("http://127.0.0.1:5000/status", { cache: "no-store", signal: AbortSignal.timeout(600) });
-    return res.ok;
-  } catch {
-    return false;
-  }
+    const res = await fetch("http://127.0.0.1:5000/status", {
+      cache: "no-store",
+      signal: AbortSignal.timeout(800),
+    });
+    if (res.ok) {
+      return await res.json();
+    }
+  } catch {}
+  return null;
 }
 
 export async function GET() {
-  const running = await isCameraRunning();
-  return NextResponse.json({ running });
+  const status = await getCameraStatus();
+  if (status) {
+    return NextResponse.json({ running: true, ...status });
+  }
+  return NextResponse.json({ running: false, mode: "offline", total_captured: 0 });
 }
 
 export async function POST(req: Request) {
   try {
-    const { action } = await req.json().catch(() => ({ action: "start" }));
+    const body = await req.json().catch(() => ({ action: "start" }));
+    const { action, label } = body;
 
     if (action === "start") {
-      const alreadyRunning = await isCameraRunning();
-      if (alreadyRunning) {
-        return NextResponse.json({ success: true, message: "Camera service already running" });
+      const currentStatus = await getCameraStatus();
+      if (currentStatus) {
+        return NextResponse.json({ success: true, message: "Camera service already running", ...currentStatus });
       }
 
       const scriptPath = path.resolve(process.cwd(), "..", "camera_service.py");
@@ -40,11 +48,12 @@ export async function POST(req: Request) {
 
       cameraChildProcess.unref();
 
-      // Poll until port 5000 responds (up to 3 seconds)
-      for (let i = 0; i < 15; i++) {
+      // Poll until port 5000 responds (up to 4 seconds)
+      for (let i = 0; i < 20; i++) {
         await new Promise((r) => setTimeout(r, 200));
-        if (await isCameraRunning()) {
-          return NextResponse.json({ success: true, message: "Camera service started successfully" });
+        const status = await getCameraStatus();
+        if (status) {
+          return NextResponse.json({ success: true, message: "Camera service started successfully", ...status });
         }
       }
 
@@ -68,6 +77,59 @@ export async function POST(req: Request) {
       }
 
       return NextResponse.json({ success: true, message: "Camera service stopped" });
+    }
+
+    if (action === "capture") {
+      try {
+        const res = await fetch("http://127.0.0.1:5000/capture", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ label }),
+          signal: AbortSignal.timeout(4000),
+        });
+        const data = await res.json();
+        return NextResponse.json(data);
+      } catch (err: any) {
+        return NextResponse.json(
+          { success: false, error: `Camera hardware service error: ${err.message}` },
+          { status: 502 }
+        );
+      }
+    }
+
+    if (action === "burst_start") {
+      try {
+        const res = await fetch("http://127.0.0.1:5000/burst/start", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ label }),
+          signal: AbortSignal.timeout(3000),
+        });
+        const data = await res.json();
+        return NextResponse.json(data);
+      } catch (err: any) {
+        return NextResponse.json(
+          { success: false, error: `Failed to start burst: ${err.message}` },
+          { status: 502 }
+        );
+      }
+    }
+
+    if (action === "burst_stop") {
+      try {
+        const res = await fetch("http://127.0.0.1:5000/burst/stop", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          signal: AbortSignal.timeout(3000),
+        });
+        const data = await res.json();
+        return NextResponse.json(data);
+      } catch (err: any) {
+        return NextResponse.json(
+          { success: false, error: `Failed to stop burst: ${err.message}` },
+          { status: 502 }
+        );
+      }
     }
 
     return NextResponse.json({ error: "Invalid action" }, { status: 400 });
