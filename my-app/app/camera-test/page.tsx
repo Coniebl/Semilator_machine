@@ -506,45 +506,52 @@ export default function CameraTestPage() {
             </div>
           </div>
 
-          {/* Card 4: Capture Trigger Actions */}
-          <div className="bg-[#2d3035] p-2.5 rounded-xl border border-white/10 flex flex-col justify-between gap-1.5">
+          {/* Card 4: Capture Trigger Actions (Side-by-Side) */}
+          <div className="bg-[#2d3035] p-2 rounded-xl border border-white/10 flex flex-col gap-1.5">
             <h2 className="text-[11px] font-bold text-gray-300 uppercase tracking-wider">4. Capture Images</h2>
 
-            {/* Dual Action Photo Button: Tap for 1 shot, Hold for Burst */}
-            <button
-              onMouseDown={handlePressStart}
-              onMouseUp={handlePressEnd}
-              onTouchStart={handlePressStart}
-              onTouchEnd={handlePressEnd}
-              disabled={serviceStatus !== "online" || burstActive}
-              className={`w-full font-bold py-2.5 rounded-xl text-base shadow-md flex flex-col items-center justify-center gap-0 transition-all active:scale-95 ${
-                serviceStatus === "online" && !burstActive
-                  ? "bg-green-600 hover:bg-green-700 text-white cursor-pointer"
-                  : "bg-gray-600 text-gray-400 cursor-not-allowed"
-              }`}
-            >
-              <div className="flex items-center gap-1.5">
-                <span>📸</span>
-                <span>{isCapturing ? "SAVING..." : "TAKE PHOTO"}</span>
-              </div>
-              <span className="text-[9px] text-green-200 font-normal">
-                (Tap: 1 Photo • Hold: {burstCount} Burst)
-              </span>
-            </button>
+            <div className="grid grid-cols-2 gap-2">
+              {/* Take Photo Button */}
+              <button
+                onMouseDown={handlePressStart}
+                onMouseUp={handlePressEnd}
+                onTouchStart={handlePressStart}
+                onTouchEnd={handlePressEnd}
+                disabled={serviceStatus !== "online" || burstActive}
+                className={`font-bold py-2.5 px-1 rounded-xl text-sm shadow-md flex flex-col items-center justify-center gap-0.5 transition-all active:scale-95 ${
+                  serviceStatus === "online" && !burstActive
+                    ? "bg-green-600 hover:bg-green-700 text-white cursor-pointer"
+                    : "bg-gray-600 text-gray-400 cursor-not-allowed"
+                }`}
+              >
+                <div className="flex items-center gap-1 font-bold">
+                  <span>📸</span>
+                  <span>{isCapturing ? "SAVING..." : "TAKE PHOTO"}</span>
+                </div>
+                <span className="text-[8px] text-green-200 font-normal truncate">
+                  (Tap: 1 • Hold: Burst)
+                </span>
+              </button>
 
-            {/* Dedicated Direct Burst Button */}
-            <button
-              onClick={handleStartBurst}
-              disabled={serviceStatus !== "online" || burstActive}
-              className={`w-full font-bold py-1.5 rounded-xl text-xs shadow-md flex items-center justify-center gap-1.5 transition-all active:scale-95 ${
-                serviceStatus === "online" && !burstActive
-                  ? "bg-amber-600 hover:bg-amber-700 text-white cursor-pointer"
-                  : "bg-gray-600 text-gray-400 cursor-not-allowed"
-              }`}
-            >
-              <span>⚡</span>
-              <span>BURST SHOOT ({burstCount} SHOTS)</span>
-            </button>
+              {/* Dedicated Direct Burst Button */}
+              <button
+                onClick={handleStartBurst}
+                disabled={serviceStatus !== "online" || burstActive}
+                className={`font-bold py-2.5 px-1 rounded-xl text-sm shadow-md flex flex-col items-center justify-center gap-0.5 transition-all active:scale-95 ${
+                  serviceStatus === "online" && !burstActive
+                    ? "bg-amber-600 hover:bg-amber-700 text-white cursor-pointer"
+                    : "bg-gray-600 text-gray-400 cursor-not-allowed"
+                }`}
+              >
+                <div className="flex items-center gap-1 font-bold">
+                  <span>⚡</span>
+                  <span>START BURST</span>
+                </div>
+                <span className="text-[8px] text-amber-200 font-normal truncate">
+                  ({burstCount} continuous shots)
+                </span>
+              </button>
+            </div>
           </div>
         </div>
       </div>
