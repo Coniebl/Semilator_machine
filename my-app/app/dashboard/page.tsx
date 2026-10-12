@@ -3,6 +3,7 @@ import { useRouter, useSearchParams } from 'next/navigation';
 import { useEffect, useState, useRef, Suspense } from 'react';
 import Image from 'next/image';
 import { supabase } from '@/lib/supabase';
+import { useTouchScroll } from '@/lib/useTouchScroll';
 
 const CustomFish = ({ animDelay, opacity }: { animDelay: string, opacity: number }) => (
   <div 
@@ -147,6 +148,7 @@ const SwipeableHistoryItem = ({
         style={{
           transform: `translateX(${translateX}px)`,
           transition: dragOffset !== null ? "none" : "transform 0.25s cubic-bezier(0.2, 0.8, 0.2, 1)",
+          touchAction: "pan-y",
         }}
         onTouchStart={(e) => handleStart(e.touches[0].clientX, e.touches[0].clientY)}
         onTouchMove={(e) => handleMove(e.touches[0].clientX, e.touches[0].clientY)}
@@ -201,6 +203,7 @@ function DashboardContent() {
   const [sellerPic, setSellerPic] = useState<string | null>(null);
   const [buyerPic, setBuyerPic] = useState<string | null>(null);
   const [swipedItemId, setSwipedItemId] = useState<string | null>(null);
+  const historyScrollRef = useTouchScroll<HTMLDivElement>();
 
   useEffect(() => {
     const fetchProfiles = async () => {
@@ -625,7 +628,7 @@ function DashboardContent() {
           {/* History Panel */}
           <div className="bg-[#8C8885] rounded-xl p-3 flex flex-col flex-1 overflow-hidden">
             <h2 className="font-bold text-white text-base mb-1.5">DAILY TRANSACTION HISTORY</h2>
-            <div className="flex-1 overflow-y-auto no-scrollbar pr-1">
+            <div ref={historyScrollRef} className="flex-1 overflow-y-auto no-scrollbar touch-scroll pr-1">
               {history.map((item, index) => (
                 <SwipeableHistoryItem
                   key={item.id}

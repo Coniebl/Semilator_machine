@@ -1,9 +1,11 @@
 "use client";
 import { useState, useEffect, useRef } from "react";
 import { useRouter } from "next/navigation";
+import { useTouchScroll } from "@/lib/useTouchScroll";
 
 export default function CameraTestPage() {
   const router = useRouter();
+  const panelScrollRef = useTouchScroll<HTMLDivElement>();
   const [selectedLabel, setSelectedLabel] = useState("fingerlings");
   const [customLabel, setCustomLabel] = useState("");
   const [burstCount, setBurstCount] = useState<number>(20);
@@ -382,7 +384,7 @@ export default function CameraTestPage() {
         </div>
 
         {/* Right Column: Touch Controls & Dataset Tagging */}
-        <div className="w-[305px] flex flex-col gap-1.5 shrink-0 overflow-y-auto">
+        <div ref={panelScrollRef} className="w-[305px] flex flex-col gap-1.5 shrink-0 overflow-y-auto touch-scroll">
           {/* Card 1: Category Selection */}
           <div className="bg-[#2d3035] p-2 rounded-xl border border-white/10">
             <h2 className="text-[11px] font-bold text-gray-300 mb-1 uppercase tracking-wider">1. Category / Tag</h2>
