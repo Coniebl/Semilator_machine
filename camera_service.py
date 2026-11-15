@@ -1,20 +1,24 @@
 #!/usr/bin/env python3
 """
-Semilator Machine Learning Dataset & Camera Service
+Semilator Machine Learning Dataset, Camera & Hardware Control Service
 Features:
-  - Multi-threaded HTTP server (ThreadedHTTPServer) so video streaming NEVER blocks captures
-  - Instant single-frame capture (POST /capture)
-  - Batch burst shooting for N images (POST /burst/start with {"count": 20|50|100})
-  - Live color channel flip toggle (POST /color_toggle) for instant true color calibration
-  - 100% offline local storage in dataset/<category>/
-  - Hardware support: Picamera2 (Raspberry Pi 5) with OpenCV and mock fallbacks
+  - Multi-threaded HTTP server (ThreadedHTTPServer) so video streaming NEVER blocks captures or counting
+  - Real-time Arduino Uno Serial communication (115200 baud) with 3x ToF, 3x IR break-beams, and 3x servo trapdoor gates
+  - Smart Trapdoor Curation & Exact Fulfillment Algorithm (Subset-sum matching + anti-overshoot gating)
+  - Tri-sensor real-time independent counting (Vision, ToF, IR) with continuous 2-out-of-3 majority consensus
+  - Dual Mode: Auto-detects physical Arduino on USB; seamlessly falls back to realistic water-flow simulation if hardware is unplugged
+  - Server-Sent Events (SSE) `/counting/stream` for live UI counter & gate visualization
+  - Camera support: Picamera2 (Raspberry Pi 5) with OpenCV and mock fallbacks
+  - Video recording for ML dataset collection: Continuous manual recording ("as long as you want") and timed short clips (e.g., 10-15s)
 """
 
 import os
 import io
 import time
 import json
+import random
 import threading
+import queue
 from datetime import datetime
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from socketserver import ThreadingMixIn
@@ -27,6 +31,7 @@ os.makedirs(DATASET_ROOT, exist_ok=True)
 HAS_PICAM = False
 HAS_CV2 = False
 HAS_NUMPY = False
+HAS_SERIAL = False
 
 try:
     import numpy as np
@@ -50,21 +55,31 @@ try:
 except ImportError:
     pass
 
+try:
+    import serial
+    import serial.tools.list_ports
+    HAS_SERIAL = True
+except ImportError:
+    pass
+
 from PIL import Image, ImageDraw
 
 def count_local_dataset():
-    """Counts total photos currently stored across all category folders."""
+    """Counts total videos currently stored across all category folders."""
     count = 0
     if os.path.exists(DATASET_ROOT):
         for root, dirs, files in os.walk(DATASET_ROOT):
             for f in files:
-                if f.lower().endswith(('.jpg', '.jpeg', '.png')):
+                if f.lower().endswith(('.mp4', '.avi', '.mov', '.mkv')):
                     count += 1
     return count
 
+# ==============================================================================
+# Camera Manager (Picamera2 / OpenCV / Mock)
+# ==============================================================================
 class CameraManager:
     def __init__(self):
-        self.lock = threading.Lock()
+        self.lock = threading.RLock()
         self.picam2 = None
         self.cap = None
         self.is_running = False
@@ -72,19 +87,25 @@ class CameraManager:
         self.last_frame_bytes = None
         self.last_image = None
         self.active_label = "fingerlings"
-        
-        # Color calibration: toggle between swapped BGR->RGB and original
         self.color_swap = True
         
-        # Batch burst state
-        self.burst_active = False
-        self.burst_remaining = 0
-        self.burst_target = 0
-        self.burst_interval = 0.18  # ~5.5 FPS
+        # Video Recording state
+        self.recording_active = False
+        self.recording_mode = None  # "continuous" or "timed"
+        self.recording_duration = 0.0  # 0 = unlimited/manual, >0 = target seconds
+        self.recording_start_time = 0.0
+        self.recording_elapsed = 0.0
+        self.recording_remaining = 0.0
+        self.video_writer = None
+        self.raw_file_writer = None
+        self.video_frame_size = (1280, 720)
+        self.current_video_file = None
+        self.current_video_path = None
+        self.recording_fps = 20.0
         
-        # Motion Freeze & Exposure Controls
-        self.shutter_mode = "auto"  # "auto", "fast_500", "ultra_1000"
-        self.gain_level = 2.0       # 1.0, 2.0, 4.0, 8.0
+        # Exposure Controls
+        self.shutter_mode = "auto"
+        self.gain_level = 2.0
 
         self.last_saved_file = None
         self.total_captured = count_local_dataset()
@@ -94,7 +115,6 @@ class CameraManager:
         self.start_thread()
 
     def init_camera(self):
-        # 1. Try Picamera2 FIRST (Required for Raspberry Pi 5 CSI camera hardware ISP)
         if HAS_PICAM:
             try:
                 self.picam2 = Picamera2()
@@ -107,7 +127,6 @@ class CameraManager:
             except Exception as e:
                 print(f"[CAMERA] Picamera2 init failed: {e}. Falling back to OpenCV/Mock.")
 
-        # 2. Try OpenCV fallback (USB webcams / desktop testing)
         if HAS_CV2:
             try:
                 self.cap = cv2.VideoCapture(0)
@@ -130,7 +149,6 @@ class CameraManager:
         with self.lock:
             self.color_swap = not self.color_swap
             current = self.color_swap
-        print(f"[CAMERA] Color channel swap set to: {current}")
         return current
 
     def set_exposure_controls(self, shutter_mode=None, gain=None):
@@ -145,77 +163,46 @@ class CameraManager:
         if self.mode == "picamera2" and self.picam2:
             try:
                 if current_shutter == "fast_500":
-                    # 1/500s = 2000 microseconds (shutter speed)
                     self.picam2.set_controls({
                         "AeEnable": False,
                         "ExposureTime": 2000,
                         "AnalogueGain": current_gain
                     })
-                    print(f"[EXPOSURE] Set Fast Motion 1/500s (2000us) Gain {current_gain}x")
                 elif current_shutter == "ultra_1000":
-                    # 1/1000s = 1000 microseconds (high speed freeze)
                     self.picam2.set_controls({
                         "AeEnable": False,
                         "ExposureTime": 1000,
                         "AnalogueGain": current_gain
                     })
-                    print(f"[EXPOSURE] Set Ultra Fast 1/1000s (1000us) Gain {current_gain}x")
                 else:
-                    # Auto exposure enabled
-                    self.picam2.set_controls({
-                        "AeEnable": True
-                    })
-                    print("[EXPOSURE] Set Auto Exposure (AEC/AGC)")
+                    self.picam2.set_controls({ "AeEnable": True })
             except Exception as e:
-                print(f"[EXPOSURE CONTROL ERROR] {e}")
+                print(f"[EXPOSURE ERROR] {e}")
 
-        return {
-            "success": True,
-            "shutter_mode": current_shutter,
-            "gain": current_gain
-        }
+        return { "success": True, "shutter_mode": current_shutter, "gain": current_gain }
 
     def _convert_to_rgb_image(self, arr):
-        """Converts raw camera array to PIL Image, applying color flip if active."""
         if arr is None:
             return None
-
         try:
             if len(arr.shape) == 3:
                 channels = arr.shape[2]
                 if self.color_swap:
-                    # Swap Channel 0 and 2 (BGR <-> RGB)
                     if channels == 3:
-                        if HAS_CV2:
-                            processed = cv2.cvtColor(arr, cv2.COLOR_BGR2RGB)
-                        elif HAS_NUMPY:
-                            processed = np.ascontiguousarray(arr[:, :, ::-1])
-                        else:
-                            processed = arr[:, :, ::-1]
+                        processed = cv2.cvtColor(arr, cv2.COLOR_BGR2RGB) if HAS_CV2 else arr[:, :, ::-1]
                     elif channels == 4:
-                        if HAS_CV2:
-                            processed = cv2.cvtColor(arr, cv2.COLOR_BGRA2RGB)
-                        elif HAS_NUMPY:
-                            processed = np.ascontiguousarray(arr[:, :, [2, 1, 0]])
-                        else:
-                            processed = arr[:, :, [2, 1, 0]]
+                        processed = cv2.cvtColor(arr, cv2.COLOR_BGRA2RGB) if HAS_CV2 else arr[:, :, [2, 1, 0]]
                     else:
                         processed = arr
                 else:
                     processed = arr
             else:
                 processed = arr
-
             return Image.fromarray(processed)
-        except Exception as e:
-            print(f"[CONVERT ERROR] {e}")
-            try:
-                return Image.fromarray(arr)
-            except Exception:
-                return None
+        except Exception:
+            return None
 
     def capture_new_frame(self):
-        """Captures a single raw frame and returns (jpeg_bytes, PIL_Image). Never returns None."""
         if self.mode == "opencv" and self.cap:
             try:
                 ret, frame = self.cap.read()
@@ -225,8 +212,8 @@ class CameraManager:
                         buf = io.BytesIO()
                         img.save(buf, format="JPEG", quality=80)
                         return buf.getvalue(), img
-            except Exception as e:
-                print(f"[OPENCV CAPTURE ERROR] {e}")
+            except Exception:
+                pass
 
         elif self.mode == "picamera2" and self.picam2:
             try:
@@ -236,117 +223,598 @@ class CameraManager:
                     buf = io.BytesIO()
                     img.save(buf, format="JPEG", quality=80)
                     return buf.getvalue(), img
-            except Exception as e:
-                print(f"[PICAM CAPTURE ERROR] {e}")
+            except Exception:
+                pass
 
-        # Fallback Mock Frame with timestamp
+        # Fallback Mock Frame
         img = Image.new("RGB", (640, 480), color=(26, 54, 93))
         draw = ImageDraw.Draw(img)
-        t_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
-        draw.text((30, 30), "SEMILATOR CAMERA STREAM", fill=(255, 255, 255))
-        draw.text((30, 80), f"Mode: {self.mode}", fill=(200, 200, 200))
-        draw.text((30, 130), f"Color Swap: {self.color_swap}", fill=(255, 255, 0))
-        draw.text((30, 180), f"Active Label: {self.active_label}", fill=(100, 255, 100))
-        draw.text((30, 230), f"Dataset Count: {self.total_captured}", fill=(255, 200, 100))
+        draw.text((30, 30), "SEMILATOR DUAL-MODE HARDWARE STREAM", fill=(255, 255, 255))
+        draw.text((30, 80), f"Camera Mode: {self.mode}", fill=(200, 200, 200))
+        draw.text((30, 120), f"Arduino Status: {'Connected' if arduino.is_connected else 'Simulated Mode'}", fill=(100, 255, 100))
+        draw.text((30, 160), f"Color Swap: {self.color_swap}", fill=(255, 255, 0))
+        draw.text((30, 200), f"Dataset Videos Saved: {self.total_captured}", fill=(255, 200, 100))
+        if self.recording_active:
+            mode_txt = f"Timed ({self.recording_duration:.0f}s)" if self.recording_duration > 0 else "Continuous"
+            draw.text((30, 240), f"REC [{mode_txt}]: {self.recording_elapsed:.1f}s", fill=(255, 80, 80))
         buf = io.BytesIO()
         img.save(buf, format="JPEG")
         return buf.getvalue(), img
 
-    def save_capture(self, label=None):
-        """Thread-safe, non-blocking save of the current frame to local storage."""
-        label = label or self.active_label or "unlabeled"
-        folder = os.path.join(DATASET_ROOT, label)
-        os.makedirs(folder, exist_ok=True)
-
+    def start_recording(self, label=None, duration=0):
         with self.lock:
+            if self.recording_active:
+                return {
+                    "success": True,
+                    "recording_active": True,
+                    "recording_mode": self.recording_mode,
+                    "recording_duration": self.recording_duration,
+                    "recording_elapsed": round(self.recording_elapsed, 1),
+                    "recording_remaining": round(self.recording_remaining, 1),
+                    "filename": self.current_video_file,
+                    "label": self.active_label
+                }
+
+            self.active_label = label or self.active_label or "fingerlings"
+            folder = os.path.join(DATASET_ROOT, self.active_label)
+            os.makedirs(folder, exist_ok=True)
+
             img = self.last_image.copy() if self.last_image else None
 
         if img is None:
             _, img = self.capture_new_frame()
 
-        if img is None:
-            return {"success": False, "error": "No camera frame available"}
-
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-        filename = f"{label}_{timestamp}.jpg"
+        frame_size = img.size if img is not None else (1280, 720)
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        dur_val = float(duration) if duration else 0.0
+        mode_tag = f"{int(dur_val)}s" if dur_val > 0 else "cont"
+        filename = f"{self.active_label}_{timestamp}_{mode_tag}.mp4"
         filepath = os.path.join(folder, filename)
-        
-        # Save high quality JPEG directly to local disk
-        img.save(filepath, format="JPEG", quality=95)
+
+        writer = None
+        raw_writer = None
+
+        if HAS_CV2:
+            try:
+                fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+                writer = cv2.VideoWriter(filepath, fourcc, self.recording_fps, frame_size)
+                if not writer.isOpened():
+                    writer.release()
+                    filename = f"{self.active_label}_{timestamp}_{mode_tag}.avi"
+                    filepath = os.path.join(folder, filename)
+                    fourcc = cv2.VideoWriter_fourcc(*"XVID")
+                    writer = cv2.VideoWriter(filepath, fourcc, self.recording_fps, frame_size)
+            except Exception as e:
+                print(f"[VIDEO WRITER ERROR] {e}")
+                writer = None
+
+        if writer is None or (HAS_CV2 and not writer.isOpened()):
+            writer = None
+            try:
+                raw_writer = open(filepath, "wb")
+            except Exception as e:
+                return {"success": False, "error": f"Failed to create video file: {e}"}
 
         with self.lock:
-            self.total_captured += 1
-            current_total = self.total_captured
-            self.last_saved_file = filename
+            self.video_writer = writer
+            self.raw_file_writer = raw_writer
+            self.video_frame_size = frame_size
+            self.current_video_file = filename
+            self.current_video_path = filepath
+            self.recording_duration = dur_val
+            self.recording_mode = "timed" if dur_val > 0 else "continuous"
+            self.recording_start_time = time.time()
+            self.recording_elapsed = 0.0
+            self.recording_remaining = dur_val if dur_val > 0 else 0.0
+            self.recording_active = True
 
+        print(f"[VIDEO] Started {self.recording_mode} recording -> {filepath}")
         return {
             "success": True,
+            "recording_active": True,
+            "recording_mode": self.recording_mode,
+            "recording_duration": self.recording_duration,
+            "recording_elapsed": 0.0,
+            "recording_remaining": self.recording_remaining,
             "filename": filename,
             "filepath": filepath,
-            "label": label,
-            "total_captured": current_total
-        }
-
-    def start_batch_burst(self, label=None, count=20):
-        """Initiates a batch burst shoot of exactly count images."""
-        with self.lock:
-            self.active_label = label or self.active_label or "fingerlings"
-            self.burst_target = int(count)
-            self.burst_remaining = int(count)
-            self.burst_active = True
-        print(f"[BURST] Started batch burst: {count} images for label '{self.active_label}'")
-        return {
-            "success": True,
-            "burst_active": True,
-            "burst_target": self.burst_target,
-            "burst_remaining": self.burst_remaining,
             "label": self.active_label
         }
 
-    def stop_burst(self):
-        """Halts any ongoing burst shoot."""
+    def _write_video_frame(self, img, frame_bytes):
         with self.lock:
-            self.burst_active = False
-            self.burst_remaining = 0
+            if not self.recording_active:
+                return
+            writer = self.video_writer
+            raw_writer = self.raw_file_writer
+            target_size = self.video_frame_size
+
+        if writer is not None and img is not None and HAS_CV2 and HAS_NUMPY:
+            try:
+                frame_img = img if img.size == target_size else img.resize(target_size)
+                rgb_arr = np.array(frame_img)
+                bgr_arr = cv2.cvtColor(rgb_arr, cv2.COLOR_RGB2BGR)
+                with self.lock:
+                    if self.recording_active and self.video_writer is not None:
+                        self.video_writer.write(bgr_arr)
+            except Exception as e:
+                print(f"[VIDEO FRAME WRITE ERROR] {e}")
+        elif raw_writer is not None and frame_bytes is not None:
+            try:
+                with self.lock:
+                    if self.recording_active and self.raw_file_writer is not None:
+                        self.raw_file_writer.write(frame_bytes)
+            except Exception:
+                pass
+
+    def stop_recording(self):
+        with self.lock:
+            was_recording = self.recording_active
+            self.recording_active = False
+            writer = self.video_writer
+            raw_writer = self.raw_file_writer
+            self.video_writer = None
+            self.raw_file_writer = None
+
+            filename = self.current_video_file
+            filepath = self.current_video_path
+            elapsed = round(self.recording_elapsed, 1)
+            mode = self.recording_mode
+
+            self.recording_mode = None
+            self.recording_duration = 0.0
+            self.recording_elapsed = 0.0
+            self.recording_remaining = 0.0
+            self.current_video_file = None
+            self.current_video_path = None
+
+            if was_recording and filename:
+                self.total_captured += 1
+                self.last_saved_file = filename
             total = self.total_captured
-        print("[BURST] Burst shoot stopped.")
-        return {"success": True, "burst_active": False, "total_captured": total}
+
+        if writer is not None:
+            try:
+                writer.release()
+            except Exception as e:
+                print(f"[VIDEO RELEASE ERROR] {e}")
+
+        if raw_writer is not None:
+            try:
+                raw_writer.close()
+            except Exception:
+                pass
+
+        if was_recording and filepath:
+            print(f"[VIDEO] Saved recording ({elapsed}s): {filepath}")
+
+        return {
+            "success": True,
+            "recording_active": False,
+            "filename": filename or self.last_saved_file,
+            "filepath": filepath,
+            "duration_recorded": elapsed,
+            "recording_mode": mode,
+            "total_captured": total
+        }
 
     def start_thread(self):
         self.is_running = True
         threading.Thread(target=self._loop, daemon=True).start()
 
     def _loop(self):
-        last_burst_time = 0
         while self.is_running:
             try:
                 frame_bytes, img = self.capture_new_frame()
                 with self.lock:
                     self.last_frame_bytes = frame_bytes
                     self.last_image = img
+                    is_rec = self.recording_active
 
-                # Handle batch burst shooting
-                now = time.time()
-                if self.burst_active and (now - last_burst_time) >= self.burst_interval:
-                    if self.burst_remaining > 0:
-                        self.save_capture()
-                        with self.lock:
-                            self.burst_remaining -= 1
-                            if self.burst_remaining <= 0:
-                                self.burst_active = False
-                                print(f"[BURST] Batch completed: {self.burst_target} images saved!")
-                        last_burst_time = now
-                    else:
-                        with self.lock:
-                            self.burst_active = False
-
-            except Exception as e:
-                print(f"[CAMERA LOOP ERROR] {e}")
-
-            time.sleep(0.04)  # ~25 FPS live preview
+                if is_rec:
+                    self._write_video_frame(img, frame_bytes)
+                    should_stop = False
+                    with self.lock:
+                        if self.recording_active:
+                            now = time.time()
+                            self.recording_elapsed = max(0.0, now - self.recording_start_time)
+                            if self.recording_duration > 0:
+                                self.recording_remaining = max(0.0, self.recording_duration - self.recording_elapsed)
+                                if self.recording_elapsed >= self.recording_duration:
+                                    should_stop = True
+                    if should_stop:
+                        self.stop_recording()
+            except Exception:
+                pass
+            time.sleep(0.04)
 
 cam = CameraManager()
 
+# ==============================================================================
+# Arduino USB Serial Bridge
+# ==============================================================================
+class ArduinoBridge:
+    def __init__(self, baud=115200):
+        self.baud = baud
+        self.serial_conn = None
+        self.is_connected = False
+        self.lock = threading.Lock()
+        self.port_name = None
+        self.is_running = True
+        
+        # Start connection monitor thread
+        threading.Thread(target=self._connection_monitor, daemon=True).start()
+
+    def _find_arduino_port(self):
+        if not HAS_SERIAL:
+            return None
+        ports = list(serial.tools.list_ports.comports())
+        for p in ports:
+            # Common Arduino USB identifiers (FTDI, Uno, CH340, CDC ACM)
+            desc = p.description.lower()
+            hwid = p.hwid.lower()
+            if any(k in desc or k in hwid for k in ["arduino", "ch340", "cp210", "ftdi", "usb serial", "acm"]):
+                return p.device
+        if ports:
+            return ports[0].device  # Fallback to first available COM/tty port
+        return None
+
+    def _connection_monitor(self):
+        while self.is_running:
+            if not self.is_connected:
+                port = self._find_arduino_port()
+                if port:
+                    try:
+                        conn = serial.Serial(port, self.baud, timeout=1)
+                        time.sleep(1.8)  # Wait for Arduino bootloader DTR reset
+                        with self.lock:
+                            self.serial_conn = conn
+                            self.port_name = port
+                            self.is_connected = True
+                        print(f"[ARDUINO] Successfully connected to Arduino on {port}")
+                        threading.Thread(target=self._read_serial_loop, daemon=True).start()
+                    except Exception as e:
+                        print(f"[ARDUINO] Connection attempt failed on {port}: {e}")
+            time.sleep(2.5)
+
+    def _read_serial_loop(self):
+        while self.is_connected and self.serial_conn:
+            try:
+                line = self.serial_conn.readline().decode("utf-8", errors="ignore").strip()
+                if line:
+                    self._handle_serial_message(line)
+            except Exception as e:
+                print(f"[ARDUINO] Serial read error: {e}")
+                with self.lock:
+                    self.is_connected = False
+                    if self.serial_conn:
+                        try: self.serial_conn.close()
+                        except: pass
+                        self.serial_conn = None
+                break
+
+    def _handle_serial_message(self, line):
+        # Format examples: "IR 1", "TOF 2 45", "READY", "STATUS ..."
+        parts = line.split()
+        if not parts:
+            return
+        cmd = parts[0].upper()
+        if cmd == "IR" and len(parts) >= 2:
+            try:
+                trough_id = int(parts[1]) - 1 # 0-indexed
+                curation.on_hardware_ir_event(trough_id)
+            except ValueError:
+                pass
+        elif cmd == "TOF" and len(parts) >= 2:
+            try:
+                trough_id = int(parts[1]) - 1 # 0-indexed
+                curation.on_hardware_tof_event(trough_id)
+            except ValueError:
+                pass
+
+    def send_command(self, cmd_str):
+        with self.lock:
+            if self.is_connected and self.serial_conn:
+                try:
+                    self.serial_conn.write(f"{cmd_str}\n".encode("utf-8"))
+                    self.serial_conn.flush()
+                    return True
+                except Exception as e:
+                    print(f"[ARDUINO] Serial write failed: {e}")
+                    self.is_connected = False
+                    return False
+        return False
+
+    def start_counting(self, target):
+        return self.send_command(f"START {target}")
+
+    def stop_counting(self):
+        return self.send_command("STOP")
+
+    def set_gate(self, trough_id, state):
+        # 0 = CLOSED (Buyer), 1 = OPEN (Seller)
+        return self.send_command(f"GATE {trough_id + 1} {state}")
+
+arduino = ArduinoBridge()
+
+# ==============================================================================
+# Counting & Curation Engine (Smart Gating & Real-Time Consensus)
+# ==============================================================================
+class CurationEngine:
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.is_counting = False
+        self.target = 0
+        
+        # Real-time tri-sensor independent tallies
+        self.vision_count = 0
+        self.tof_count = 0
+        self.ir_count = 0
+        self.final_count = 0
+        
+        # 3 Troughs Gate States: 0 = CLOSED (Buyer container), 1 = OPEN (Seller return)
+        self.gates = [1, 1, 1]  # Default all OPEN (return) when idle
+        
+        # In-flight fish currently detected in lanes: [Trough1, Trough2, Trough3]
+        self.in_flight = [0, 0, 0]
+        
+        # SSE Subscribers
+        self.subscribers = []
+        
+        # Simulation thread
+        self.sim_thread = None
+
+    def subscribe(self):
+        q = queue.Queue(maxsize=50)
+        with self.lock:
+            self.subscribers.append(q)
+        return q
+
+    def unsubscribe(self, q):
+        with self.lock:
+            if q in self.subscribers:
+                self.subscribers.remove(q)
+
+    def _broadcast(self, event_type="count_update"):
+        payload = self.get_state()
+        data_str = f"event: {event_type}\ndata: {json.dumps(payload)}\n\n"
+        with self.lock:
+            subs = list(self.subscribers)
+        for q in subs:
+            try:
+                q.put_nowait(data_str)
+            except queue.Full:
+                pass
+
+    def get_state(self):
+        with self.lock:
+            mode = "hardware" if arduino.is_connected else "simulated"
+            return {
+                "is_counting": self.is_counting,
+                "target": self.target,
+                "vision": self.vision_count,
+                "tof": self.tof_count,
+                "ir": self.ir_count,
+                "final": self.final_count,
+                "gates": list(self.gates),
+                "in_flight": list(self.in_flight),
+                "mode": mode,
+                "arduino_connected": arduino.is_connected
+            }
+
+    def compute_consensus(self):
+        counts = [self.vision_count, self.tof_count, self.ir_count]
+        freq = {}
+        for c in counts:
+            freq[c] = freq.get(c, 0) + 1
+        
+        # 2-out-of-3 majority consensus
+        for val, count in freq.items():
+            if count >= 2:
+                return val
+        
+        # If all 3 diverge, take the median
+        return sorted(counts)[1]
+
+    def evaluate_curation_logic(self):
+        """
+        Calculates remaining needed R = target - final_count.
+        If in-flight fish exceed R, chooses the exact subset of troughs to fulfill R without overshoot.
+        Excess troughs immediately open their trapdoor to return fish to the seller.
+        """
+        remaining = max(0, self.target - self.final_count)
+        
+        if remaining <= 0:
+            # Target met! Open all gates immediately
+            self.gates = [1, 1, 1]
+            for i in range(3):
+                arduino.set_gate(i, 1)
+            return
+
+        total_in_flight = sum(self.in_flight)
+        if total_in_flight <= remaining:
+            # Safe to route all current fish to buyer
+            self.gates = [0, 0, 0]
+            for i in range(3):
+                arduino.set_gate(i, 0)
+            return
+
+        # Overshoot risk! Search for subset sum match among troughs
+        # Find which trough(s) can fulfill exactly 'remaining'
+        best_troughs = None
+        
+        # 1. Single trough exact match
+        for i in range(3):
+            if self.in_flight[i] == remaining and self.in_flight[i] > 0:
+                best_troughs = [i]
+                break
+
+        # 2. Pair of troughs exact match
+        if best_troughs is None and remaining > 1:
+            for i in range(3):
+                for j in range(i + 1, 3):
+                    if self.in_flight[i] + self.in_flight[j] == remaining:
+                        best_troughs = [i, j]
+                        break
+                if best_troughs:
+                    break
+
+        # 3. Fallback: select single fish trough to avoid overshooting
+        if best_troughs is None:
+            candidates = [i for i in range(3) if 0 < self.in_flight[i] <= remaining]
+            if candidates:
+                best_troughs = [candidates[0]]
+            else:
+                best_troughs = []
+
+        # Apply gate states
+        new_gates = [1, 1, 1]  # Default OPEN (Return to Seller)
+        for idx in best_troughs:
+            new_gates[idx] = 0  # CLOSED (Allow to Buyer)
+
+        self.gates = new_gates
+        for i in range(3):
+            arduino.set_gate(i, self.gates[i])
+
+    def start_session(self, target):
+        with self.lock:
+            self.is_counting = True
+            self.target = int(target)
+            self.vision_count = 0
+            self.tof_count = 0
+            self.ir_count = 0
+            self.final_count = 0
+            self.gates = [0, 0, 0]  # Closed to buyer by default
+            self.in_flight = [0, 0, 0]
+
+        arduino.start_counting(self.target)
+        self._broadcast("started")
+
+        if not arduino.is_connected:
+            self.start_simulation()
+
+        return self.get_state()
+
+    def stop_session(self):
+        with self.lock:
+            self.is_counting = False
+            self.gates = [1, 1, 1]  # Open to return
+            self.in_flight = [0, 0, 0]
+
+        arduino.stop_counting()
+        self._broadcast("stopped")
+        return self.get_state()
+
+    # --- Live Hardware Trigger Handlers ---
+    def on_hardware_vision_event(self, trough_id):
+        with self.lock:
+            if not self.is_counting: return
+            self.in_flight[trough_id] += 1
+            self.evaluate_curation_logic()
+            if self.gates[trough_id] == 0:
+                self.vision_count += 1
+                self.final_count = self.compute_consensus()
+        self._broadcast()
+
+    def on_hardware_tof_event(self, trough_id):
+        with self.lock:
+            if not self.is_counting: return
+            if self.gates[trough_id] == 0:
+                self.tof_count += 1
+                self.final_count = self.compute_consensus()
+        self._broadcast()
+
+    def on_hardware_ir_event(self, trough_id):
+        with self.lock:
+            if not self.is_counting: return
+            self.in_flight[trough_id] = max(0, self.in_flight[trough_id] - 1)
+            if self.gates[trough_id] == 0:
+                self.ir_count += 1
+                self.final_count = self.compute_consensus()
+
+            # Check target reached
+            if self.final_count >= self.target:
+                self.is_counting = False
+                self.gates = [1, 1, 1]
+                arduino.stop_counting()
+                completed = True
+            else:
+                completed = False
+
+        if completed:
+            self._broadcast("completed")
+        else:
+            self._broadcast()
+
+    # --- Simulation Engine (Dual-Mode Fallback) ---
+    def start_simulation(self):
+        if self.sim_thread and self.sim_thread.is_alive():
+            return
+        self.sim_thread = threading.Thread(target=self._simulation_loop, daemon=True)
+        self.sim_thread.start()
+
+    def _simulation_loop(self):
+        print(f"[SIMULATION] Starting water-flow fingerling simulation for target {self.target}...")
+        while True:
+            with self.lock:
+                if not self.is_counting or self.final_count >= self.target:
+                    break
+                rem = self.target - self.final_count
+                
+                # Pick trough and quantity (1 or 2 fish)
+                trough_idx = random.randint(0, 2)
+                # Introduce multi-fish clusters occasionally to test anti-overshoot curation
+                fish_in_lane = 2 if (rem > 1 and random.random() < 0.35) else 1
+                
+                self.in_flight[trough_idx] += fish_in_lane
+                self.evaluate_curation_logic()
+                
+                is_buyer_lane = (self.gates[trough_idx] == 0)
+                if is_buyer_lane:
+                    self.vision_count += fish_in_lane
+                    self.final_count = self.compute_consensus()
+
+            self._broadcast()
+
+            # Fish slides down towards ToF sensor (propagation delay ~180ms)
+            time.sleep(0.18)
+            with self.lock:
+                if not self.is_counting: break
+                if self.gates[trough_idx] == 0:
+                    self.tof_count += fish_in_lane
+                    self.final_count = self.compute_consensus()
+            self._broadcast()
+
+            # Fish slides down towards submerged IR break-beam (~220ms)
+            time.sleep(0.22)
+            completed = False
+            with self.lock:
+                if not self.is_counting: break
+                self.in_flight[trough_idx] = max(0, self.in_flight[trough_idx] - fish_in_lane)
+                if self.gates[trough_idx] == 0:
+                    self.ir_count += fish_in_lane
+                    self.final_count = self.compute_consensus()
+
+                if self.final_count >= self.target:
+                    self.is_counting = False
+                    self.gates = [1, 1, 1]
+                    completed = True
+
+            if completed:
+                print(f"[SIMULATION] Target {self.target} fulfilled! Final: {self.final_count}")
+                self._broadcast("completed")
+                break
+            else:
+                self._broadcast()
+
+            # Interval between fingerlings entering the funnel
+            time.sleep(random.uniform(0.35, 0.75))
+
+curation = CurationEngine()
+
+# ==============================================================================
+# Multi-Threaded HTTP & SSE Request Handler
+# ==============================================================================
 class CameraHTTPHandler(BaseHTTPRequestHandler):
     def end_headers(self):
         self.send_header("Access-Control-Allow-Origin", "*")
@@ -364,7 +832,46 @@ class CameraHTTPHandler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         clean_path = self.path.split("?")[0]
-        if clean_path == "/video_feed":
+        
+        # 1. Live Counting Server-Sent Events (SSE) Stream
+        if clean_path == "/counting/stream":
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
+            self.send_header("Cache-Control", "no-cache, no-transform")
+            self.send_header("Connection", "keep-alive")
+            self.send_header("X-Accel-Buffering", "no")
+            self.end_headers()
+
+            q = curation.subscribe()
+            try:
+                # Send initial state snapshot immediately
+                init_data = f"event: init\ndata: {json.dumps(curation.get_state())}\n\n"
+                self.wfile.write(init_data.encode("utf-8"))
+                self.wfile.flush()
+
+                while True:
+                    try:
+                        msg = q.get(timeout=3.0)
+                        self.wfile.write(msg.encode("utf-8"))
+                        self.wfile.flush()
+                    except queue.Empty:
+                        # Heartbeat ping
+                        self.wfile.write(b": ping\n\n")
+                        self.wfile.flush()
+            except (BrokenPipeError, ConnectionResetError):
+                pass
+            finally:
+                curation.unsubscribe(q)
+
+        # 2. Counting Status Snapshot
+        elif clean_path == "/counting/status":
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps(curation.get_state()).encode("utf-8"))
+
+        # 3. Video MJPEG Stream (for Camera & Testing)
+        elif clean_path == "/video_feed":
             self.send_response(200)
             self.send_header("Content-Type", "multipart/x-mixed-replace; boundary=frame")
             self.send_header("Cache-Control", "no-cache, no-store, must-revalidate")
@@ -404,21 +911,24 @@ class CameraHTTPHandler(BaseHTTPRequestHandler):
             self.send_header("Content-Type", "application/json")
             self.end_headers()
             with cam.lock:
-                data = {
+                cam_data = {
                     "running": True,
                     "mode": cam.mode,
                     "label": cam.active_label,
                     "color_swap": cam.color_swap,
                     "shutter_mode": cam.shutter_mode,
                     "gain": cam.gain_level,
-                    "burst_active": cam.burst_active,
-                    "burst_remaining": cam.burst_remaining,
-                    "burst_target": cam.burst_target,
+                    "recording_active": cam.recording_active,
+                    "recording_mode": cam.recording_mode,
+                    "recording_duration": round(cam.recording_duration, 1),
+                    "recording_elapsed": round(cam.recording_elapsed, 1),
+                    "recording_remaining": round(cam.recording_remaining, 1),
+                    "current_video": cam.current_video_file,
                     "total_captured": cam.total_captured,
                     "last_saved": cam.last_saved_file,
                     "dataset_path": DATASET_ROOT
                 }
-            self.wfile.write(json.dumps(data).encode("utf-8"))
+            self.wfile.write(json.dumps(cam_data).encode("utf-8"))
 
         else:
             self.send_response(404)
@@ -433,25 +943,48 @@ class CameraHTTPHandler(BaseHTTPRequestHandler):
         except Exception:
             payload = {}
 
-        if clean_path == "/capture":
+        # 1. Counting Control: START
+        if clean_path == "/counting/start":
+            target = int(payload.get("target", 10))
+            res = curation.start_session(target)
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps({ "success": True, **res }).encode("utf-8"))
+
+        # 2. Counting Control: STOP
+        elif clean_path == "/counting/stop":
+            res = curation.stop_session()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps({ "success": True, **res }).encode("utf-8"))
+
+        # 3. Manual Gate Override
+        elif clean_path == "/counting/gate":
+            trough = int(payload.get("trough", 1)) - 1
+            state = int(payload.get("state", 0)) # 0 = Buyer, 1 = Seller
+            if 0 <= trough <= 2:
+                curation.gates[trough] = state
+                arduino.set_gate(trough, state)
+                curation._broadcast()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps({ "success": True, "gates": curation.gates }).encode("utf-8"))
+
+        # 4. Camera Video Recording & Calibration
+        elif clean_path == "/record/start":
             label = payload.get("label", cam.active_label)
-            res = cam.save_capture(label)
+            duration = payload.get("duration", 0)
+            res = cam.start_recording(label=label, duration=duration)
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.end_headers()
             self.wfile.write(json.dumps(res).encode("utf-8"))
 
-        elif clean_path == "/burst/start":
-            label = payload.get("label", cam.active_label)
-            count = payload.get("count", 20)
-            res = cam.start_batch_burst(label=label, count=count)
-            self.send_response(200)
-            self.send_header("Content-Type", "application/json")
-            self.end_headers()
-            self.wfile.write(json.dumps(res).encode("utf-8"))
-
-        elif clean_path == "/burst/stop":
-            res = cam.stop_burst()
+        elif clean_path == "/record/stop":
+            res = cam.stop_recording()
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.end_headers()
@@ -487,19 +1020,21 @@ class CameraHTTPHandler(BaseHTTPRequestHandler):
             self.end_headers()
 
 
-# Multi-Threaded HTTP Server: prevents video stream from blocking API requests!
 class ThreadedHTTPServer(ThreadingMixIn, HTTPServer):
     daemon_threads = True
     allow_reuse_address = True
 
 if __name__ == "__main__":
-    print(f"[INFO] Semilator Multi-Threaded Camera Service starting on port {PORT}...")
+    print(f"[INFO] Semilator Dual-Mode Hardware & Counting Service starting on port {PORT}...")
     print(f"[INFO] Offline storage directory: {DATASET_ROOT}")
-    print(f"[INFO] Initial photos in dataset: {cam.total_captured}")
+    print(f"[INFO] Arduino status: {'Searching USB ports...' if HAS_SERIAL else 'PySerial not installed (Running Simulator)'}")
     server = ThreadedHTTPServer(("0.0.0.0", PORT), CameraHTTPHandler)
     try:
         server.serve_forever()
     except KeyboardInterrupt:
-        print("\n[INFO] Stopping Camera Service...")
+        print("\n[INFO] Stopping Service...")
+        if cam.recording_active:
+            cam.stop_recording()
         cam.is_running = False
+        arduino.is_running = False
         server.server_close()

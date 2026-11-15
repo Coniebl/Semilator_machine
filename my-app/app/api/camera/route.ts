@@ -51,7 +51,7 @@ export async function GET() {
 export async function POST(req: Request) {
   try {
     const body = await req.json().catch(() => ({ action: "start" }));
-    const { action, label, count } = body;
+    const { action, label, duration } = body;
 
     if (action === "start") {
       let currentStatus = await getCameraStatus();
@@ -72,54 +72,36 @@ export async function POST(req: Request) {
       return NextResponse.json({ success: false, message: "Camera service starting, please wait..." });
     }
 
-    if (action === "capture") {
+    if (action === "record_start") {
       try {
-        const res = await fetch("http://127.0.0.1:5000/capture", {
+        const res = await fetch("http://127.0.0.1:5000/record/start", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ label }),
+          body: JSON.stringify({ label, duration: duration ?? 0 }),
           signal: AbortSignal.timeout(5000),
         });
         const data = await res.json();
         return NextResponse.json(data);
       } catch (err: any) {
         return NextResponse.json(
-          { success: false, error: `Camera hardware service error: ${err.message}` },
+          { success: false, error: `Failed to start video recording: ${err.message}` },
           { status: 502 }
         );
       }
     }
 
-    if (action === "burst_start") {
+    if (action === "record_stop" || action === "stop") {
       try {
-        const res = await fetch("http://127.0.0.1:5000/burst/start", {
+        const res = await fetch("http://127.0.0.1:5000/record/stop", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ label, count: count || 20 }),
           signal: AbortSignal.timeout(5000),
         });
         const data = await res.json();
         return NextResponse.json(data);
       } catch (err: any) {
         return NextResponse.json(
-          { success: false, error: `Failed to start burst: ${err.message}` },
-          { status: 502 }
-        );
-      }
-    }
-
-    if (action === "burst_stop" || action === "stop") {
-      try {
-        const res = await fetch("http://127.0.0.1:5000/burst/stop", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          signal: AbortSignal.timeout(3000),
-        });
-        const data = await res.json();
-        return NextResponse.json(data);
-      } catch (err: any) {
-        return NextResponse.json(
-          { success: false, error: `Failed to stop burst: ${err.message}` },
+          { success: false, error: `Failed to stop video recording: ${err.message}` },
           { status: 502 }
         );
       }

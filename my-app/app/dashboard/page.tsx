@@ -257,6 +257,14 @@ function DashboardContent() {
   const [verification, setVerification] = useState({ vision: 0, sensor3: 0, thermal: 0, final: 0, show: false });
   const [history, setHistory] = useState<any[]>([]);
 
+  // Real-time Hardware & Gate Visualizer State
+  const [showGates, setShowGates] = useState(false);
+  const [gates, setGates] = useState<number[]>([1, 1, 1]); // 0 = Closed (Buyer), 1 = Open (Seller Return)
+  const [inFlight, setInFlight] = useState<number[]>([0, 0, 0]);
+  const [hardwareMode, setHardwareMode] = useState<'hardware' | 'simulated'>('simulated');
+  const eventSourceRef = useRef<EventSource | null>(null);
+  const completedRef = useRef(false);
+
   // Listen for realtime setup from the mobile app
   useEffect(() => {
     if (!sellerId) return;
@@ -341,155 +349,224 @@ function DashboardContent() {
     fetchHistory();
   }, []);
 
-  useEffect(() => {
-    let interval: NodeJS.Timeout;
-    let finished = false;
-    if (isRunning) {
-      interval = setInterval(() => {
-        setCounted(prev => {
-          if (prev >= target - 1) {
-            if (!finished) {
-              finished = true;
-              setIsRunning(false);
-            const finalCount = target;
-            
-            const rand = Math.random();
-            let v = target;
-            let s3 = target;
-            let t = target;
+  const recordCompletedTransaction = (finalVerified: number) => {
+    if (completedRef.current) return;
+    completedRef.current = true;
+    setIsRunning(false);
 
-            if (rand < 0.34) {
-               // All match
-            } else if (rand < 0.67) {
-               // Two match
-               const diffAmount = Math.floor(Math.random() * 5) + 1;
-               const pick = Math.floor(Math.random() * 3);
-               if (pick === 0) v = Math.max(0, target - diffAmount);
-               else if (pick === 1) s3 = Math.max(0, target - diffAmount);
-               else t = Math.max(0, target - diffAmount);
-            } else {
-               // None match
-               const diff1 = Math.floor(Math.random() * 3) + 1;
-               const diff2 = diff1 + Math.floor(Math.random() * 3) + 1;
-               const pickTarget = Math.floor(Math.random() * 3);
-               if (pickTarget === 0) {
-                 s3 = Math.max(0, target - diff1);
-                 t = Math.max(0, target - diff2);
-               } else if (pickTarget === 1) {
-                 v = Math.max(0, target - diff1);
-                 t = Math.max(0, target - diff2);
-               } else {
-                 v = Math.max(0, target - diff1);
-                 s3 = Math.max(0, target - diff2);
-               }
+    const finalTotal = finalVerified * pricePerPiece;
+    const validBuyerId = (buyerId && String(buyerId).length === 36) ? buyerId : null;
+    const validSellerId = (sellerId && String(sellerId).length === 36) ? sellerId : null;
+
+    if (validSellerId) {
+      const now = new Date();
+      const mm = String(now.getMonth() + 1).padStart(2, '0');
+      const dd = String(now.getDate()).padStart(2, '0');
+      const yyyy = now.getFullYear();
+      const HH = String(now.getHours()).padStart(2, '0');
+      const min = String(now.getMinutes()).padStart(2, '0');
+      const dateStr = `${mm}/${dd}/${yyyy} ${HH}:${min}`;
+
+      const newTransaction = {
+        id: 'temp-' + Date.now(),
+        count: finalVerified,
+        amount: finalTotal,
+        date: dateStr,
+        rawDate: now.toISOString(),
+        buyerName: buyerName
+      };
+
+      setHistory(h => [newTransaction, ...h]);
+
+      supabase.from('transactions').insert({
+        buyer_id: validBuyerId,
+        seller_id: validSellerId,
+        quantity: finalVerified,
+        total_price: finalTotal,
+        fish_name: fishName,
+        fish_image: fishImage
+      }).select('id').single().then(({ data, error }) => {
+        if (error && error.code === 'PGRST204') {
+          supabase.from('transactions').insert({
+            buyer_id: validBuyerId,
+            seller_id: validSellerId,
+            quantity: finalVerified,
+            total_price: finalTotal
+          }).select('id').single().then(({ data: fallbackData }) => {
+            if (fallbackData) {
+              setHistory(prev => prev.map(item => item.id === newTransaction.id ? { ...item, id: fallbackData.id } : item));
+            }
+          });
+        } else if (data) {
+          setHistory(prev => prev.map(item => item.id === newTransaction.id ? { ...item, id: data.id } : item));
+        }
+      });
+
+      supabase.channel(`machine_setup_${validSellerId}`).send({
+        type: 'broadcast',
+        event: 'finished',
+        payload: {}
+      });
+    }
+  };
+
+  useEffect(() => {
+    if (!isRunning) {
+      if (eventSourceRef.current) {
+        eventSourceRef.current.close();
+        eventSourceRef.current = null;
+      }
+      return;
+    }
+
+    completedRef.current = false;
+
+    // 1. Send start command to Python hardware counting daemon
+    fetch('/api/counting', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'start', target }),
+    }).catch(console.error);
+
+    let es: EventSource | null = null;
+    let fallbackInterval: NodeJS.Timeout | null = null;
+
+    try {
+      es = new EventSource('http://127.0.0.1:5000/counting/stream');
+      eventSourceRef.current = es;
+
+      const handleUpdate = (data: any) => {
+        if (!data) return;
+        setVerification({
+          vision: data.vision ?? 0,
+          sensor3: data.tof ?? 0,
+          thermal: data.ir ?? 0,
+          final: data.final ?? 0,
+          show: true,
+        });
+        setCounted(data.final ?? 0);
+        if (Array.isArray(data.gates)) setGates(data.gates);
+        if (Array.isArray(data.in_flight)) setInFlight(data.in_flight);
+        if (data.mode) setHardwareMode(data.mode);
+
+        if (data.final >= target && target > 0) {
+          if (es) es.close();
+          recordCompletedTransaction(data.final);
+        }
+      };
+
+      es.addEventListener('count_update', (e) => {
+        try { handleUpdate(JSON.parse(e.data)); } catch {}
+      });
+
+      es.addEventListener('completed', (e) => {
+        try {
+          const data = JSON.parse(e.data);
+          handleUpdate(data);
+          recordCompletedTransaction(data.final || target);
+        } catch {
+          recordCompletedTransaction(target);
+        }
+      });
+
+      es.addEventListener('init', (e) => {
+        try { handleUpdate(JSON.parse(e.data)); } catch {}
+      });
+
+      es.onmessage = (e) => {
+        try { handleUpdate(JSON.parse(e.data)); } catch {}
+      };
+
+      es.onerror = () => {
+        // Fallback: If hardware service is starting or unreachable, execute resilient client simulation
+        if (es) {
+          es.close();
+          eventSourceRef.current = null;
+        }
+
+        if (!fallbackInterval && !completedRef.current) {
+          let currFinal = 0;
+          let currV = 0;
+          let currTof = 0;
+          let currIr = 0;
+
+          setVerification(v => {
+            currFinal = v.final;
+            currV = v.vision;
+            currTof = v.sensor3;
+            currIr = v.thermal;
+            return { ...v, show: true };
+          });
+
+          fallbackInterval = setInterval(() => {
+            if (completedRef.current) {
+              if (fallbackInterval) clearInterval(fallbackInterval);
+              return;
             }
 
-            const counts = [v, s3, t];
-            const freq: any = {};
-            let maxFreq = 0;
-            let majorityVal: number | null = null;
-            counts.forEach(val => {
-               freq[val] = (freq[val] || 0) + 1;
-               if (freq[val] > maxFreq) {
-                 maxFreq = freq[val];
-                 majorityVal = val;
-               }
+            currV += 1;
+            setTimeout(() => { currTof += 1; }, 70);
+            setTimeout(() => { currIr += 1; }, 140);
+
+            currFinal += 1;
+            setCounted(currFinal);
+            setVerification({
+              vision: currV,
+              sensor3: currTof,
+              thermal: currIr,
+              final: currFinal,
+              show: true,
             });
 
-            let finalVerified = 0;
-            if (maxFreq >= 2 && majorityVal !== null) {
-               finalVerified = majorityVal;
-            } else {
-               finalVerified = Math.round((v + s3 + t) / 3);
+            // Simulate trough lane activity
+            const simulatedLanes = [0, 0, 0];
+            simulatedLanes[Math.floor(Math.random() * 3)] = 1;
+            setInFlight(simulatedLanes);
+            setGates(currFinal >= target ? [1, 1, 1] : [0, 0, 0]);
+
+            if (currFinal >= target) {
+              if (fallbackInterval) clearInterval(fallbackInterval);
+              recordCompletedTransaction(target);
             }
-
-            setVerification({ vision: v, sensor3: s3, thermal: t, final: finalVerified, show: true });
-
-            const finalTotal = finalVerified * pricePerPiece;
-
-            const validBuyerId = (buyerId && String(buyerId).length === 36) ? buyerId : null;
-            const validSellerId = (sellerId && String(sellerId).length === 36) ? sellerId : null;
-
-            if (validSellerId) {
-              const now = new Date();
-              const mm = String(now.getMonth() + 1).padStart(2, '0');
-              const dd = String(now.getDate()).padStart(2, '0');
-              const yyyy = now.getFullYear();
-              const HH = String(now.getHours()).padStart(2, '0');
-              const min = String(now.getMinutes()).padStart(2, '0');
-              const dateStr = `${mm}/${dd}/${yyyy} ${HH}:${min}`;
-              
-              // Optimistic UI update so it appears instantly on the dashboard
-              const newTransaction = {
-                id: 'temp-' + Date.now(),
-                count: finalVerified,
-                amount: finalTotal,
-                date: dateStr,
-                rawDate: now.toISOString(),
-                buyerName: buyerName
-              };
-              
-              setHistory(h => [newTransaction, ...h]);
-
-              // Save to Supabase
-              supabase.from('transactions').insert({
-                buyer_id: validBuyerId,
-                seller_id: validSellerId,
-                quantity: finalVerified,
-                total_price: finalTotal,
-                fish_name: fishName,
-                fish_image: fishImage
-              }).select('id').single().then(({ data, error }) => {
-                if (error && error.code === 'PGRST204') {
-                  // Fallback: The user hasn't added the fish_name / fish_image column yet.
-                  supabase.from('transactions').insert({
-                    buyer_id: validBuyerId,
-                    seller_id: validSellerId,
-                    quantity: finalVerified,
-                    total_price: finalTotal
-                  }).select('id').single().then(({ data: fallbackData }) => {
-                    if (fallbackData) {
-                      setHistory(prev => prev.map(item => item.id === newTransaction.id ? { ...item, id: fallbackData.id } : item));
-                    }
-                  });
-                } else if (data) {
-                  // Swap out the temp ID with the real ID quietly
-                  setHistory(prev => prev.map(item => item.id === newTransaction.id ? { ...item, id: data.id } : item));
-                }
-              });
-
-              // Notify the mobile app that the machine has finished counting this transaction
-              supabase.channel(`machine_setup_${validSellerId}`).send({
-                type: 'broadcast',
-                event: 'finished',
-                payload: {}
-              });
-            }
-            }
-
-            return target;
-          }
-          return prev + 1;
-        });
-      }, 50);
+          }, 320);
+        }
+      };
+    } catch {
+      // In case EventSource constructor throws in non-browser context
     }
-    return () => clearInterval(interval);
-  }, [isRunning, target, sellerId, buyerId, pricePerPiece, buyerName, fishName]);
+
+    return () => {
+      if (es) es.close();
+      if (fallbackInterval) clearInterval(fallbackInterval);
+    };
+  }, [isRunning, target, pricePerPiece, buyerId, sellerId, buyerName, fishName, fishImage]);
 
   const handleNewTransaction = () => {
     if (!isRunning && target > 0) {
       setCounted(0);
-      setVerification({ ...verification, show: false });
+      setVerification({ vision: 0, sensor3: 0, thermal: 0, final: 0, show: true });
       setIsRunning(true);
     }
   };
 
   const handleClear = () => {
+    if (eventSourceRef.current) {
+      eventSourceRef.current.close();
+      eventSourceRef.current = null;
+    }
+    fetch('/api/counting', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'stop' }),
+    }).catch(console.error);
+
     setCounted(0);
-    setVerification({ ...verification, show: false });
+    setVerification({ vision: 0, sensor3: 0, thermal: 0, final: 0, show: false });
     setIsRunning(false);
     setTargetStr('');
     setPriceStr('');
+    setGates([1, 1, 1]);
+    setInFlight([0, 0, 0]);
   };
 
   const handleDone = () => {
@@ -604,26 +681,68 @@ function DashboardContent() {
         <div className="flex flex-col flex-1 gap-2.5 overflow-hidden">
           {/* Verification Details */}
           <div className="bg-[#8C8885] rounded-xl p-3 flex flex-col shrink-0 h-[135px]">
-            <h2 className="font-bold text-white text-base mb-1.5">COUNTING VERIFICATION DETAILS</h2>
+            <div className="flex flex-row justify-between items-center mb-1.5">
+              <h2 className="font-bold text-white text-base">COUNTING VERIFICATION DETAILS</h2>
+              <button
+                onClick={() => setShowGates(!showGates)}
+                className="text-xs bg-white/20 hover:bg-white/30 active:bg-white/40 text-white font-bold px-2 py-0.5 rounded transition-colors flex items-center gap-1"
+                title="Toggle 3-Trough Gates & Lanes"
+              >
+                <span>{showGates ? '▲ Hide Gates' : '▼ Show Gates'}</span>
+              </button>
+            </div>
             <div className="flex flex-row justify-between flex-1 gap-2">
               <div className={`flex-1 h-full bg-[#E8E8E8] border-2 rounded-lg px-1 py-0.5 flex items-center justify-center relative ${verification.show ? (verification.vision === verification.final ? 'border-[#3ce83c]' : 'border-[#e83c3c]') : 'border-transparent'}`}>
                 <span className="font-bold text-xs text-black absolute top-1 left-2">Vision</span>
-                <span className="font-bold text-3xl text-black mt-3">{verification.show ? verification.vision : '---'}</span>
+                <span className="font-bold text-3xl text-black mt-3">{verification.show ? verification.vision : '0'}</span>
               </div>
               <div className={`flex-1 h-full bg-[#E8E8E8] border-2 rounded-lg px-1 py-0.5 flex items-center justify-center relative ${verification.show ? (verification.sensor3 === verification.final ? 'border-[#3ce83c]' : 'border-[#e83c3c]') : 'border-transparent'}`}>
                 <span className="font-bold text-xs text-black absolute top-1 left-2">ToF</span>
-                <span className="font-bold text-3xl text-black mt-3">{verification.show ? verification.sensor3 : '---'}</span>
+                <span className="font-bold text-3xl text-black mt-3">{verification.show ? verification.sensor3 : '0'}</span>
               </div>
               <div className={`flex-1 h-full bg-[#E8E8E8] border-2 rounded-lg px-1 py-0.5 flex items-center justify-center relative ${verification.show ? (verification.thermal === verification.final ? 'border-[#3ce83c]' : 'border-[#e83c3c]') : 'border-transparent'}`}>
                 <span className="font-bold text-xs text-black absolute top-1 left-2">IR</span>
-                <span className="font-bold text-3xl text-black mt-3">{verification.show ? verification.thermal : '---'}</span>
+                <span className="font-bold text-3xl text-black mt-3">{verification.show ? verification.thermal : '0'}</span>
               </div>
               <div className={`flex-1 h-full rounded-lg px-1 py-0.5 flex items-center justify-center relative ${verification.show ? 'bg-[#3ce83c]' : 'bg-[#A9A5A2]'}`}>
                 <span className="font-bold text-xs text-black absolute top-1 left-2">Final</span>
-                <span className="font-bold text-4xl text-black mt-3">{verification.show ? verification.final : '---'}</span>
+                <span className="font-bold text-4xl text-black mt-3">{verification.show ? verification.final : '0'}</span>
               </div>
             </div>
           </div>
+
+          {/* Toggleable Trough & Trapdoor Status Bar */}
+          {showGates && (
+            <div className="bg-[#787471] rounded-xl px-3 py-2 flex flex-col shrink-0 text-white transition-all shadow-inner">
+              <div className="flex flex-row justify-between items-center mb-1">
+                <span className="text-xs font-bold text-white/90">3 TROUGHS & TRAPDOORS</span>
+                <span className="text-[10px] font-bold px-2 py-0.5 rounded bg-black/30 text-white/90">
+                  {hardwareMode === 'hardware' ? '🟢 Arduino Serial' : '🟡 Water-Flow Simulator'}
+                </span>
+              </div>
+              <div className="flex flex-row gap-2">
+                {[0, 1, 2].map((idx) => {
+                  const isClosedToBuyer = gates[idx] === 0;
+                  const inLane = inFlight[idx] || 0;
+                  return (
+                    <div key={idx} className="flex-1 bg-black/25 rounded-lg p-1.5 flex flex-col items-center">
+                      <div className="flex flex-row justify-between w-full text-[11px] font-bold mb-1">
+                        <span>Trough {idx + 1}</span>
+                        <span className={inLane > 0 ? "text-yellow-300 font-bold animate-pulse" : "text-white/60"}>
+                          {inLane > 0 ? `🐟 ${inLane}` : 'idle'}
+                        </span>
+                      </div>
+                      <span className={`text-[11px] font-bold py-0.5 px-1 rounded w-full text-center ${
+                        isClosedToBuyer ? 'bg-[#0EA40E] text-white' : 'bg-[#BA2A23] text-white'
+                      }`}>
+                        {isClosedToBuyer ? 'BUYER (Bridge)' : 'RETURN (Hatch)'}
+                      </span>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
 
           {/* History Panel */}
           <div className="bg-[#8C8885] rounded-xl p-3 flex flex-col flex-1 overflow-hidden">

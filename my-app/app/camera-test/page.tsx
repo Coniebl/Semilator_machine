@@ -8,49 +8,53 @@ export default function CameraTestPage() {
   const panelScrollRef = useTouchScroll<HTMLDivElement>();
   const [selectedLabel, setSelectedLabel] = useState("fingerlings");
   const [customLabel, setCustomLabel] = useState("");
-  const [burstCount, setBurstCount] = useState<number>(20);
+  const [shortDuration, setShortDuration] = useState<number>(10);
   const [serviceStatus, setServiceStatus] = useState<"connecting" | "online">("connecting");
   const [cameraMode, setCameraMode] = useState<string>("detecting");
   const [colorSwap, setColorSwap] = useState<boolean>(true);
-  
+
   // Motion freeze & Exposure state
   const [shutterMode, setShutterMode] = useState<"auto" | "fast_500" | "ultra_1000">("auto");
   const [gainLevel, setGainLevel] = useState<number>(2.0);
 
-  // Burst progress state
-  const [burstActive, setBurstActive] = useState(false);
-  const [burstRemaining, setBurstRemaining] = useState(0);
-  const [burstTarget, setBurstTarget] = useState(20);
+  // Video Recording state
+  const [recordingActive, setRecordingActive] = useState(false);
+  const [recordingMode, setRecordingMode] = useState<"continuous" | "timed" | null>(null);
+  const [recordingDuration, setRecordingDuration] = useState<number>(0);
+  const [recordingElapsed, setRecordingElapsed] = useState<number>(0);
+  const [recordingRemaining, setRecordingRemaining] = useState<number>(0);
 
   const [sessionCount, setSessionCount] = useState(0);
   const [lastSaved, setLastSaved] = useState<string | null>(null);
   const [feedbackMsg, setFeedbackMsg] = useState<{ text: string; type: "success" | "error" | "info" } | null>(null);
-  const [isCapturing, setIsCapturing] = useState(false);
-  const [flash, setFlash] = useState(false);
+  const [isBusy, setIsBusy] = useState(false);
   const [isExiting, setIsExiting] = useState(false);
 
-  // Long-press handling for capture button
-  const longPressTimerRef = useRef<NodeJS.Timeout | null>(null);
-  const isLongPressRef = useRef(false);
+  const wasRecordingRef = useRef(false);
 
-  const activeLabel = customLabel.trim() ? customLabel.trim().toLowerCase().replace(/\s+/g, "_") : selectedLabel;
+  const activeLabel = customLabel.trim()
+    ? customLabel.trim().toLowerCase().replace(/\s+/g, "_")
+    : selectedLabel;
 
   const showFeedback = (text: string, type: "success" | "error" | "info" = "info") => {
     setFeedbackMsg({ text, type });
     setTimeout(() => {
       setFeedbackMsg((prev) => (prev?.text === text ? null : prev));
-    }, 3000);
+    }, 3500);
   };
 
-  const triggerFlash = () => {
-    setFlash(true);
-    setTimeout(() => setFlash(false), 100);
+  const formatTime = (seconds: number) => {
+    const totalSec = Math.max(0, Math.floor(seconds));
+    const mins = Math.floor(totalSec / 60);
+    const secs = totalSec % 60;
+    return `${String(mins).padStart(2, "0")}:${String(secs).padStart(2, "0")}`;
   };
 
   // Stable MJPEG preview URL
-  const streamUrl = typeof window !== "undefined"
-    ? `http://${window.location.hostname}:5000/video_feed`
-    : "http://localhost:5000/video_feed";
+  const streamUrl =
+    typeof window !== "undefined"
+      ? `http://${window.location.hostname}:5000/video_feed`
+      : "http://localhost:5000/video_feed";
 
   const pingService = async () => {
     try {
@@ -59,9 +63,18 @@ export default function CameraTestPage() {
         const data = await res.json();
         if (data.running) {
           setServiceStatus("online");
-          setBurstActive(data.burst_active || false);
-          setBurstRemaining(data.burst_remaining ?? 0);
-          setBurstTarget(data.burst_target || burstCount);
+          const isRec = Boolean(data.recording_active);
+
+          if (wasRecordingRef.current && !isRec && data.last_saved) {
+            showFeedback(`🎬 Video saved: ${data.last_saved}`, "success");
+          }
+          wasRecordingRef.current = isRec;
+
+          setRecordingActive(isRec);
+          setRecordingMode(data.recording_mode || null);
+          setRecordingDuration(data.recording_duration ?? 0);
+          setRecordingElapsed(data.recording_elapsed ?? 0);
+          setRecordingRemaining(data.recording_remaining ?? 0);
           setSessionCount(data.total_captured ?? 0);
           if (data.color_swap !== undefined) setColorSwap(data.color_swap);
           if (data.shutter_mode) setShutterMode(data.shutter_mode);
@@ -86,77 +99,101 @@ export default function CameraTestPage() {
     }).catch(() => {});
 
     pingService();
-    interval = setInterval(pingService, 600);
+    interval = setInterval(pingService, 400);
 
     return () => {
       clearInterval(interval);
     };
   }, []);
 
-  const handleBack = () => {
+  const handleBack = async () => {
+    if (recordingActive) {
+      await handleStopRecording();
+    }
     router.push("/");
   };
 
-  const handleCaptureSingle = async () => {
-    if (isCapturing || burstActive) return;
-    triggerFlash();
-    setIsCapturing(true);
-
+  const handleStartContinuous = async () => {
+    if (isBusy || recordingActive) return;
+    setIsBusy(true);
     try {
       const res = await fetch("/api/camera", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "capture", label: activeLabel }),
+        body: JSON.stringify({ action: "record_start", label: activeLabel, duration: 0 }),
       });
       const data = await res.json();
       if (data.success) {
-        setSessionCount(data.total_captured);
-        setLastSaved(data.filename);
-        showFeedback(`📸 Photo saved to local storage!`, "success");
+        wasRecordingRef.current = true;
+        setRecordingActive(true);
+        setRecordingMode("continuous");
+        setRecordingDuration(0);
+        setRecordingElapsed(0);
+        showFeedback("🔴 Recording started — tap Stop whenever you are done!", "info");
       } else {
-        showFeedback(data.error || "Capture error", "error");
+        showFeedback(data.error || "Failed to start recording", "error");
       }
     } catch {
-      showFeedback("Offline capture error", "error");
+      showFeedback("Offline recording error", "error");
     } finally {
-      setIsCapturing(false);
+      setIsBusy(false);
     }
   };
 
-  const handleStartBurst = async () => {
-    if (burstActive) return;
+  const handleStartShortVideo = async () => {
+    if (isBusy || recordingActive) return;
+    setIsBusy(true);
     try {
       const res = await fetch("/api/camera", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "burst_start", label: activeLabel, count: burstCount }),
+        body: JSON.stringify({ action: "record_start", label: activeLabel, duration: shortDuration }),
       });
       const data = await res.json();
       if (data.success) {
-        setBurstActive(true);
-        setBurstRemaining(burstCount);
-        setBurstTarget(burstCount);
-        showFeedback(`⚡ Burst started: Shooting ${burstCount} photos!`, "info");
+        wasRecordingRef.current = true;
+        setRecordingActive(true);
+        setRecordingMode("timed");
+        setRecordingDuration(shortDuration);
+        setRecordingElapsed(0);
+        setRecordingRemaining(shortDuration);
+        showFeedback(`⏱️ Recording ${shortDuration}s short video clip!`, "info");
       } else {
-        showFeedback(data.error || "Burst start failed", "error");
+        showFeedback(data.error || "Failed to start short video", "error");
       }
     } catch {
-      showFeedback("Burst command error", "error");
+      showFeedback("Short video command error", "error");
+    } finally {
+      setIsBusy(false);
     }
   };
 
-  const handleStopBurst = async () => {
+  const handleStopRecording = async () => {
+    if (isBusy) return;
+    setIsBusy(true);
     try {
       const res = await fetch("/api/camera", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "burst_stop" }),
+        body: JSON.stringify({ action: "record_stop" }),
       });
       const data = await res.json();
-      setBurstActive(false);
-      if (data.total_captured) setSessionCount(data.total_captured);
-      showFeedback("⏹ Burst stopped early", "info");
-    } catch {}
+      wasRecordingRef.current = false;
+      setRecordingActive(false);
+      setRecordingMode(null);
+      if (data.total_captured !== undefined) setSessionCount(data.total_captured);
+      if (data.filename) setLastSaved(data.filename);
+      showFeedback(
+        data.filename
+          ? `🎬 Video saved (${data.duration_recorded ?? 0}s): ${data.filename}`
+          : "⏹ Video recording stopped & saved",
+        "success"
+      );
+    } catch {
+      showFeedback("Failed to stop recording", "error");
+    } finally {
+      setIsBusy(false);
+    }
   };
 
   const handleToggleColor = async () => {
@@ -196,28 +233,12 @@ export default function CameraTestPage() {
     }
   };
 
-  const handlePressStart = () => {
-    if (burstActive) return;
-    isLongPressRef.current = false;
-    longPressTimerRef.current = setTimeout(() => {
-      isLongPressRef.current = true;
-      handleStartBurst();
-    }, 450); // 450ms hold triggers burst
-  };
-
-  const handlePressEnd = () => {
-    if (longPressTimerRef.current) {
-      clearTimeout(longPressTimerRef.current);
-      longPressTimerRef.current = null;
-    }
-    if (!isLongPressRef.current && !burstActive) {
-      handleCaptureSingle();
-    }
-  };
-
   const handleExitKiosk = async () => {
     if (!confirm("Are you sure you want to exit Kiosk mode and return to the Pi desktop?")) return;
     setIsExiting(true);
+    if (recordingActive) {
+      await handleStopRecording();
+    }
     try {
       await fetch("/api/exit", { method: "POST" });
     } catch {}
@@ -231,7 +252,7 @@ export default function CameraTestPage() {
     { id: "debris", label: "🌿 Debris / Bubbles" },
   ];
 
-  const burstOptions = [20, 50, 100];
+  const shortDurationOptions = [10, 12, 15];
   const gainOptions = [
     { val: 1.0, label: "1x Clean" },
     { val: 2.0, label: "2x" },
@@ -239,13 +260,13 @@ export default function CameraTestPage() {
     { val: 8.0, label: "8x Max" },
   ];
 
-  const burstProgressPercent = burstTarget > 0 ? Math.min(100, Math.round(((burstTarget - burstRemaining) / burstTarget) * 100)) : 0;
+  const timedProgressPercent =
+    recordingDuration > 0
+      ? Math.min(100, Math.round((recordingElapsed / recordingDuration) * 100))
+      : 0;
 
   return (
     <div className="w-full h-full bg-[#1e2022] text-white p-2 flex flex-col font-roboto select-none relative overflow-hidden">
-      {/* Visual Shutter Flash */}
-      {flash && <div className="absolute inset-0 bg-white/70 z-50 pointer-events-none transition-opacity" />}
-
       {/* Floating Notification Toast */}
       {feedbackMsg && (
         <div
@@ -271,7 +292,7 @@ export default function CameraTestPage() {
             ← Back
           </button>
           <div>
-            <h1 className="text-xs font-bold tracking-wide">CAMERA CALIBRATION & ML DATA COLLECTOR</h1>
+            <h1 className="text-xs font-bold tracking-wide">CAMERA CALIBRATION & ML VIDEO COLLECTOR</h1>
             <div className="flex items-center gap-1.5 text-[10px] text-gray-300">
               <span
                 className={`inline-block w-2 h-2 rounded-full ${
@@ -280,7 +301,7 @@ export default function CameraTestPage() {
               />
               <span>
                 {serviceStatus === "online"
-                  ? `Hardware Online (${cameraMode.toUpperCase()}) • Global Shutter`
+                  ? `Hardware Online (${cameraMode.toUpperCase()}) • Video Dataset Mode`
                   : "Connecting on Port 5000..."}
               </span>
             </div>
@@ -341,44 +362,60 @@ export default function CameraTestPage() {
             </div>
           )}
 
-          {/* Burst Active Overlay with Live Progress Bar */}
-          {burstActive && (
+          {/* Video Recording Active Overlay */}
+          {recordingActive && (
             <div className="absolute top-2.5 left-2.5 right-2.5 bg-black/85 backdrop-blur-md border border-red-500/80 p-2.5 rounded-xl shadow-2xl flex flex-col gap-1.5 animate-fade-in z-30">
               <div className="flex justify-between items-center text-xs font-bold">
                 <span className="text-red-400 flex items-center gap-1.5">
                   <span className="w-2.5 h-2.5 bg-red-500 rounded-full animate-ping" />
-                  BURST SHOOTING IN PROGRESS
+                  {recordingMode === "timed"
+                    ? `SHORT VIDEO RECORDING (${recordingDuration}s)`
+                    : "CONTINUOUS VIDEO RECORDING"}
                 </span>
                 <span className="font-mono text-yellow-300">
-                  {burstTarget - burstRemaining} / {burstTarget} ({burstProgressPercent}%)
+                  {recordingMode === "timed"
+                    ? `${recordingElapsed.toFixed(1)}s / ${recordingDuration}s (${timedProgressPercent}%)`
+                    : `${formatTime(recordingElapsed)} (${recordingElapsed.toFixed(1)}s)`}
                 </span>
                 <button
-                  onClick={handleStopBurst}
-                  className="bg-red-600 hover:bg-red-700 text-white text-[10px] px-2 py-0.5 rounded font-bold"
+                  onClick={handleStopRecording}
+                  className="bg-red-600 hover:bg-red-700 text-white text-[10px] px-2.5 py-0.5 rounded font-bold active:scale-95"
                 >
-                  ⏹ Stop
+                  ⏹ Stop & Save
                 </button>
               </div>
-              <div className="w-full bg-gray-800 h-2.5 rounded-full overflow-hidden border border-white/20">
-                <div
-                  className="bg-gradient-to-r from-amber-500 to-red-500 h-full transition-all duration-150"
-                  style={{ width: `${burstProgressPercent}%` }}
-                />
-              </div>
+              {recordingMode === "timed" ? (
+                <div className="w-full bg-gray-800 h-2.5 rounded-full overflow-hidden border border-white/20">
+                  <div
+                    className="bg-gradient-to-r from-amber-500 to-red-500 h-full transition-all duration-150"
+                    style={{ width: `${timedProgressPercent}%` }}
+                  />
+                </div>
+              ) : (
+                <div className="w-full bg-gray-800 h-2 rounded-full overflow-hidden border border-white/20">
+                  <div className="bg-red-500/80 h-full w-full animate-pulse" />
+                </div>
+              )}
             </div>
           )}
 
           {/* Clean Bottom Overlay */}
           <div className="absolute bottom-1.5 left-1.5 right-1.5 bg-black/75 backdrop-blur-md px-3 py-1.5 rounded-lg flex justify-between items-center text-[11px] border border-white/10 z-20">
-            <span className="truncate max-w-[32%]">
+            <span className="truncate max-w-[34%]">
               Tag: <strong className="text-green-400 font-mono">{activeLabel}</strong>
             </span>
-            <span className="truncate max-w-[32%]">
-              Speed: <strong className="text-cyan-400 font-mono">{shutterMode === "auto" ? "Auto" : shutterMode === "fast_500" ? "1/500s" : "1/1000s"}</strong> ({gainLevel}x)
+            <span className="truncate max-w-[34%]">
+              Speed:{" "}
+              <strong className="text-cyan-400 font-mono">
+                {shutterMode === "auto" ? "Auto" : shutterMode === "fast_500" ? "1/500s" : "1/1000s"}
+              </strong>{" "}
+              ({gainLevel}x)
             </span>
             <span className="text-right text-gray-300 flex items-center gap-1">
-              <span className="text-green-400 font-bold">💾</span>
-              <span>Total: <strong className="text-yellow-400 font-mono">{sessionCount}</strong></span>
+              <span className="text-green-400 font-bold">🎬</span>
+              <span>
+                Videos: <strong className="text-yellow-400 font-mono">{sessionCount}</strong>
+              </span>
             </span>
           </div>
         </div>
@@ -396,11 +433,12 @@ export default function CameraTestPage() {
                     setSelectedLabel(cat.id);
                     setCustomLabel("");
                   }}
+                  disabled={recordingActive}
                   className={`py-1 px-1.5 rounded-lg font-bold text-left text-[11px] transition-all truncate ${
                     selectedLabel === cat.id && !customLabel
                       ? "bg-green-600 text-white shadow ring-2 ring-white/80"
                       : "bg-[#3e434a] text-gray-200 hover:bg-[#4a5058]"
-                  }`}
+                  } ${recordingActive ? "opacity-60 cursor-not-allowed" : ""}`}
                 >
                   {cat.label}
                 </button>
@@ -411,8 +449,9 @@ export default function CameraTestPage() {
               type="text"
               placeholder="Or custom tag (e.g. batch_fry_1)..."
               value={customLabel}
+              disabled={recordingActive}
               onChange={(e) => setCustomLabel(e.target.value)}
-              className="w-full bg-[#1e2022] border border-white/20 rounded-lg px-2 py-1 text-white font-mono text-[11px] focus:outline-none focus:border-green-500"
+              className="w-full bg-[#1e2022] border border-white/20 rounded-lg px-2 py-1 text-white font-mono text-[11px] focus:outline-none focus:border-green-500 disabled:opacity-60"
             />
           </div>
 
@@ -486,72 +525,97 @@ export default function CameraTestPage() {
             </div>
           </div>
 
-          {/* Card 3: Burst Count Selector */}
+          {/* Card 3: Short Video Duration Selector */}
           <div className="bg-[#2d3035] p-2 rounded-xl border border-white/10">
-            <h2 className="text-[11px] font-bold text-gray-300 mb-1 uppercase tracking-wider">3. Burst Shoot Count</h2>
+            <div className="flex justify-between items-center mb-1">
+              <h2 className="text-[11px] font-bold text-gray-300 uppercase tracking-wider">3. Short Clip Duration</h2>
+              <span className="text-[10px] text-amber-400 font-mono">{shortDuration}s clip</span>
+            </div>
             <div className="grid grid-cols-3 gap-1">
-              {burstOptions.map((opt) => (
+              {shortDurationOptions.map((sec) => (
                 <button
-                  key={opt}
-                  onClick={() => setBurstCount(opt)}
+                  key={sec}
+                  onClick={() => setShortDuration(sec)}
+                  disabled={recordingActive}
                   className={`py-1 rounded-lg font-bold text-[11px] transition-all flex items-center justify-center gap-1 ${
-                    burstCount === opt
+                    shortDuration === sec
                       ? "bg-amber-600 text-white shadow ring-2 ring-white/80"
                       : "bg-[#3e434a] text-gray-200 hover:bg-[#4a5058]"
-                  }`}
+                  } ${recordingActive ? "opacity-60 cursor-not-allowed" : ""}`}
                 >
-                  <span>⚡</span> {opt} Shots
+                  <span>⏱️</span> {sec} Secs
                 </button>
               ))}
             </div>
           </div>
 
-          {/* Card 4: Capture Trigger Actions (Side-by-Side) */}
+          {/* Card 4: Video Recording Controls */}
           <div className="bg-[#2d3035] p-2 rounded-xl border border-white/10 flex flex-col gap-1.5">
-            <h2 className="text-[11px] font-bold text-gray-300 uppercase tracking-wider">4. Capture Images</h2>
+            <h2 className="text-[11px] font-bold text-gray-300 uppercase tracking-wider">4. Record Video</h2>
 
-            <div className="grid grid-cols-2 gap-2">
-              {/* Take Photo Button */}
+            {recordingActive ? (
               <button
-                onMouseDown={handlePressStart}
-                onMouseUp={handlePressEnd}
-                onTouchStart={handlePressStart}
-                onTouchEnd={handlePressEnd}
-                disabled={serviceStatus !== "online" || burstActive}
-                className={`font-bold py-2.5 px-1 rounded-xl text-sm shadow-md flex flex-col items-center justify-center gap-0.5 transition-all active:scale-95 ${
-                  serviceStatus === "online" && !burstActive
-                    ? "bg-green-600 hover:bg-green-700 text-white cursor-pointer"
-                    : "bg-gray-600 text-gray-400 cursor-not-allowed"
-                }`}
+                onClick={handleStopRecording}
+                disabled={isBusy}
+                className="w-full bg-red-600 hover:bg-red-700 text-white font-bold py-3 px-2 rounded-xl text-sm shadow-lg flex flex-col items-center justify-center gap-0.5 transition-all active:scale-95 border border-red-400"
               >
-                <div className="flex items-center gap-1 font-bold">
-                  <span>📸</span>
-                  <span>{isCapturing ? "SAVING..." : "TAKE PHOTO"}</span>
+                <div className="flex items-center gap-1.5 font-bold">
+                  <span className="w-2.5 h-2.5 bg-white rounded-sm inline-block" />
+                  <span>STOP & SAVE VIDEO</span>
                 </div>
-                <span className="text-[8px] text-green-200 font-normal truncate">
-                  (Tap: 1 • Hold: Burst)
+                <span className="text-[10px] text-red-100 font-mono">
+                  {recordingMode === "timed"
+                    ? `Timed Clip: ${recordingRemaining.toFixed(1)}s remaining`
+                    : `Elapsed: ${formatTime(recordingElapsed)} (Manual Mode)`}
                 </span>
               </button>
+            ) : (
+              <div className="grid grid-cols-2 gap-2">
+                {/* Free-Length Continuous Video Button */}
+                <button
+                  onClick={handleStartContinuous}
+                  disabled={serviceStatus !== "online" || isBusy}
+                  className={`font-bold py-2.5 px-1 rounded-xl text-xs shadow-md flex flex-col items-center justify-center gap-0.5 transition-all active:scale-95 ${
+                    serviceStatus === "online" && !isBusy
+                      ? "bg-green-600 hover:bg-green-700 text-white cursor-pointer"
+                      : "bg-gray-600 text-gray-400 cursor-not-allowed"
+                  }`}
+                >
+                  <div className="flex items-center gap-1 font-bold">
+                    <span>🎥</span>
+                    <span>RECORD VIDEO</span>
+                  </div>
+                  <span className="text-[8px] text-green-200 font-normal truncate">
+                    (As long as you want)
+                  </span>
+                </button>
 
-              {/* Dedicated Direct Burst Button */}
-              <button
-                onClick={handleStartBurst}
-                disabled={serviceStatus !== "online" || burstActive}
-                className={`font-bold py-2.5 px-1 rounded-xl text-sm shadow-md flex flex-col items-center justify-center gap-0.5 transition-all active:scale-95 ${
-                  serviceStatus === "online" && !burstActive
-                    ? "bg-amber-600 hover:bg-amber-700 text-white cursor-pointer"
-                    : "bg-gray-600 text-gray-400 cursor-not-allowed"
-                }`}
-              >
-                <div className="flex items-center gap-1 font-bold">
-                  <span>⚡</span>
-                  <span>START BURST</span>
-                </div>
-                <span className="text-[8px] text-amber-200 font-normal truncate">
-                  ({burstCount} continuous shots)
-                </span>
-              </button>
-            </div>
+                {/* Short Timed Video Button (10-15s) */}
+                <button
+                  onClick={handleStartShortVideo}
+                  disabled={serviceStatus !== "online" || isBusy}
+                  className={`font-bold py-2.5 px-1 rounded-xl text-xs shadow-md flex flex-col items-center justify-center gap-0.5 transition-all active:scale-95 ${
+                    serviceStatus === "online" && !isBusy
+                      ? "bg-amber-600 hover:bg-amber-700 text-white cursor-pointer"
+                      : "bg-gray-600 text-gray-400 cursor-not-allowed"
+                  }`}
+                >
+                  <div className="flex items-center gap-1 font-bold">
+                    <span>⏱️</span>
+                    <span>SHORT ({shortDuration}s)</span>
+                  </div>
+                  <span className="text-[8px] text-amber-200 font-normal truncate">
+                    (Auto-stops at {shortDuration}s)
+                  </span>
+                </button>
+              </div>
+            )}
+
+            {lastSaved && (
+              <div className="text-[10px] text-gray-400 truncate text-center font-mono mt-0.5">
+                Last saved: <span className="text-green-400">{lastSaved}</span>
+              </div>
+            )}
           </div>
         </div>
       </div>
