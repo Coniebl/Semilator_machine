@@ -110,9 +110,170 @@ class CameraManager:
         self.last_saved_file = None
         self.total_captured = count_local_dataset()
         self.mode = "mock"
+        self.selected_camera = "mock"
+        self.opencv_index = None
+        self.available_cameras = []
 
         self.init_camera()
         self.start_thread()
+
+    def _open_opencv_capture(self, index):
+        if not HAS_CV2:
+            return None
+        backends = [cv2.CAP_DSHOW, cv2.CAP_ANY] if os.name == "nt" else [cv2.CAP_ANY]
+        for backend in backends:
+            cap = None
+            try:
+                cap = cv2.VideoCapture(index, backend)
+                if cap.isOpened():
+                    ret, _ = cap.read()
+                    if ret:
+                        cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
+                        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
+                        return cap
+                cap.release()
+            except Exception:
+                if cap is not None:
+                    try:
+                        cap.release()
+                    except Exception:
+                        pass
+        return None
+
+    def _release_active_camera(self):
+        if self.cap is not None:
+            try:
+                self.cap.release()
+            except Exception:
+                pass
+            self.cap = None
+        if self.picam2 is not None:
+            try:
+                self.picam2.stop()
+                self.picam2.close()
+            except Exception:
+                pass
+            self.picam2 = None
+        self.opencv_index = None
+
+    def scan_cameras(self, max_indices=5):
+        """Scans for available Picamera2 and OpenCV camera devices."""
+        found = []
+        if HAS_PICAM:
+            found.append({
+                "id": "picamera2",
+                "label": "Raspberry Pi Camera",
+                "type": "picamera2",
+                "index": None,
+            })
+
+        if HAS_CV2:
+            with self.lock:
+                active_idx = self.opencv_index if self.mode == "opencv" and self.cap is not None else None
+
+            for idx in range(max_indices):
+                if active_idx is not None and idx == active_idx:
+                    found.append({
+                        "id": f"opencv:{idx}",
+                        "label": f"Camera {idx}",
+                        "type": "opencv",
+                        "index": idx,
+                    })
+                    continue
+
+                cap = self._open_opencv_capture(idx)
+                if cap is not None:
+                    cap.release()
+                    found.append({
+                        "id": f"opencv:{idx}",
+                        "label": f"Camera {idx}",
+                        "type": "opencv",
+                        "index": idx,
+                    })
+
+        found.append({
+            "id": "mock",
+            "label": "Simulated (Mock)",
+            "type": "mock",
+            "index": None,
+        })
+
+        with self.lock:
+            self.available_cameras = found
+        return found
+
+    def select_camera(self, camera_id):
+        """Switches the active camera source at runtime."""
+        if not camera_id:
+            return {"success": False, "error": "No camera_id provided"}
+
+        if camera_id == "mock":
+            with self.lock:
+                self._release_active_camera()
+                self.mode = "mock"
+                self.selected_camera = "mock"
+            print("[CAMERA] Switched to Mock Test Mode")
+            return {
+                "success": True,
+                "mode": self.mode,
+                "selected_camera": self.selected_camera,
+                "cameras": self.available_cameras,
+            }
+
+        if camera_id == "picamera2":
+            if not HAS_PICAM:
+                return {"success": False, "error": "Picamera2 is not available on this system"}
+            with self.lock:
+                self._release_active_camera()
+                try:
+                    self.picam2 = Picamera2()
+                    config = self.picam2.create_preview_configuration(main={"size": (1280, 720), "format": "RGB888"})
+                    self.picam2.configure(config)
+                    self.picam2.start()
+                    self.mode = "picamera2"
+                    self.selected_camera = "picamera2"
+                    print("[CAMERA] Switched to Raspberry Pi Camera via Picamera2")
+                    return {
+                        "success": True,
+                        "mode": self.mode,
+                        "selected_camera": self.selected_camera,
+                        "cameras": self.available_cameras,
+                    }
+                except Exception as e:
+                    self._release_active_camera()
+                    self.mode = "mock"
+                    self.selected_camera = "mock"
+                    return {"success": False, "error": f"Picamera2 init failed: {e}"}
+
+        if camera_id.startswith("opencv:"):
+            if not HAS_CV2:
+                return {"success": False, "error": "OpenCV is not installed"}
+            try:
+                idx = int(camera_id.split(":", 1)[1])
+            except ValueError:
+                return {"success": False, "error": f"Invalid camera index: {camera_id}"}
+
+            with self.lock:
+                self._release_active_camera()
+                cap = self._open_opencv_capture(idx)
+                if cap is not None:
+                    self.cap = cap
+                    self.opencv_index = idx
+                    self.mode = "opencv"
+                    self.selected_camera = f"opencv:{idx}"
+                    print(f"[CAMERA] Switched to OpenCV Camera {idx}")
+                    return {
+                        "success": True,
+                        "mode": self.mode,
+                        "selected_camera": self.selected_camera,
+                        "cameras": self.available_cameras,
+                    }
+                else:
+                    self.mode = "mock"
+                    self.selected_camera = "mock"
+                    return {"success": False, "error": f"Could not open Camera {idx}"}
+
+        return {"success": False, "error": f"Unknown camera_id: {camera_id}"}
 
     def init_camera(self):
         if HAS_PICAM:
@@ -122,27 +283,28 @@ class CameraManager:
                 self.picam2.configure(config)
                 self.picam2.start()
                 self.mode = "picamera2"
+                self.selected_camera = "picamera2"
                 print("[CAMERA] Initialized Raspberry Pi 5 Camera via Picamera2")
+                self.scan_cameras()
                 return
             except Exception as e:
                 print(f"[CAMERA] Picamera2 init failed: {e}. Falling back to OpenCV/Mock.")
 
         if HAS_CV2:
-            try:
-                self.cap = cv2.VideoCapture(0)
-                if self.cap.isOpened():
-                    self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
-                    self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
+            for idx in range(5):
+                cap = self._open_opencv_capture(idx)
+                if cap is not None:
+                    self.cap = cap
+                    self.opencv_index = idx
                     self.mode = "opencv"
-                    print("[CAMERA] Initialized Camera via OpenCV V4L2")
+                    self.selected_camera = f"opencv:{idx}"
+                    print(f"[CAMERA] Initialized Camera {idx} via OpenCV")
+                    self.scan_cameras()
                     return
-                else:
-                    self.cap = None
-            except Exception as e:
-                print(f"[CAMERA] OpenCV init failed: {e}")
-                self.cap = None
 
         self.mode = "mock"
+        self.selected_camera = "mock"
+        self.scan_cameras()
         print("[CAMERA] Running in Mock Test Mode (no physical camera detected)")
 
     def toggle_color_swap(self):
@@ -203,28 +365,33 @@ class CameraManager:
             return None
 
     def capture_new_frame(self):
-        if self.mode == "opencv" and self.cap:
-            try:
-                ret, frame = self.cap.read()
-                if ret:
-                    img = self._convert_to_rgb_image(frame)
+        with self.lock:
+            mode = self.mode
+            cap = self.cap
+            picam2 = self.picam2
+
+            if mode == "opencv" and cap is not None:
+                try:
+                    ret, frame = cap.read()
+                    if ret:
+                        img = self._convert_to_rgb_image(frame)
+                        if img is not None:
+                            buf = io.BytesIO()
+                            img.save(buf, format="JPEG", quality=80)
+                            return buf.getvalue(), img
+                except Exception:
+                    pass
+
+            elif mode == "picamera2" and picam2 is not None:
+                try:
+                    arr = picam2.capture_array()
+                    img = self._convert_to_rgb_image(arr)
                     if img is not None:
                         buf = io.BytesIO()
                         img.save(buf, format="JPEG", quality=80)
                         return buf.getvalue(), img
-            except Exception:
-                pass
-
-        elif self.mode == "picamera2" and self.picam2:
-            try:
-                arr = self.picam2.capture_array()
-                img = self._convert_to_rgb_image(arr)
-                if img is not None:
-                    buf = io.BytesIO()
-                    img.save(buf, format="JPEG", quality=80)
-                    return buf.getvalue(), img
-            except Exception:
-                pass
+                except Exception:
+                    pass
 
         # Fallback Mock Frame
         img = Image.new("RGB", (640, 480), color=(26, 54, 93))
@@ -552,11 +719,11 @@ class CurationEngine:
         self.ir_count = 0
         self.final_count = 0
         
-        # 3 Troughs Gate States: 0 = CLOSED (Buyer container), 1 = OPEN (Seller return)
-        self.gates = [1, 1, 1]  # Default all OPEN (return) when idle
+        # 2 Troughs Gate States: 0 = CLOSED (Buyer container), 1 = OPEN (Seller return)
+        self.gates = [1, 1]  # Default all OPEN (return) when idle
         
-        # In-flight fish currently detected in lanes: [Trough1, Trough2, Trough3]
-        self.in_flight = [0, 0, 0]
+        # In-flight fish currently detected in lanes: [Trough1, Trough2]
+        self.in_flight = [0, 0]
         
         # SSE Subscribers
         self.subscribers = []
@@ -626,16 +793,16 @@ class CurationEngine:
         
         if remaining <= 0:
             # Target met! Open all gates immediately
-            self.gates = [1, 1, 1]
-            for i in range(3):
+            self.gates = [1, 1]
+            for i in range(2):
                 arduino.set_gate(i, 1)
             return
 
         total_in_flight = sum(self.in_flight)
         if total_in_flight <= remaining:
             # Safe to route all current fish to buyer
-            self.gates = [0, 0, 0]
-            for i in range(3):
+            self.gates = [0, 0]
+            for i in range(2):
                 arduino.set_gate(i, 0)
             return
 
@@ -644,36 +811,31 @@ class CurationEngine:
         best_troughs = None
         
         # 1. Single trough exact match
-        for i in range(3):
+        for i in range(2):
             if self.in_flight[i] == remaining and self.in_flight[i] > 0:
                 best_troughs = [i]
                 break
 
-        # 2. Pair of troughs exact match
+        # 2. Both troughs exact match
         if best_troughs is None and remaining > 1:
-            for i in range(3):
-                for j in range(i + 1, 3):
-                    if self.in_flight[i] + self.in_flight[j] == remaining:
-                        best_troughs = [i, j]
-                        break
-                if best_troughs:
-                    break
+            if self.in_flight[0] + self.in_flight[1] == remaining:
+                best_troughs = [0, 1]
 
-        # 3. Fallback: select single fish trough to avoid overshooting
+        # 3. Fallback: select single trough that won't overshoot
         if best_troughs is None:
-            candidates = [i for i in range(3) if 0 < self.in_flight[i] <= remaining]
+            candidates = [i for i in range(2) if 0 < self.in_flight[i] <= remaining]
             if candidates:
                 best_troughs = [candidates[0]]
             else:
                 best_troughs = []
 
         # Apply gate states
-        new_gates = [1, 1, 1]  # Default OPEN (Return to Seller)
+        new_gates = [1, 1]  # Default OPEN (Return to Seller)
         for idx in best_troughs:
             new_gates[idx] = 0  # CLOSED (Allow to Buyer)
 
         self.gates = new_gates
-        for i in range(3):
+        for i in range(2):
             arduino.set_gate(i, self.gates[i])
 
     def start_session(self, target):
@@ -684,8 +846,8 @@ class CurationEngine:
             self.tof_count = 0
             self.ir_count = 0
             self.final_count = 0
-            self.gates = [0, 0, 0]  # Closed to buyer by default
-            self.in_flight = [0, 0, 0]
+            self.gates = [0, 0]  # Closed to buyer by default
+            self.in_flight = [0, 0]
 
         arduino.start_counting(self.target)
         self._broadcast("started")
@@ -698,8 +860,8 @@ class CurationEngine:
     def stop_session(self):
         with self.lock:
             self.is_counting = False
-            self.gates = [1, 1, 1]  # Open to return
-            self.in_flight = [0, 0, 0]
+            self.gates = [1, 1]  # Open to return
+            self.in_flight = [0, 0]
 
         arduino.stop_counting()
         self._broadcast("stopped")
@@ -707,6 +869,7 @@ class CurationEngine:
 
     # --- Live Hardware Trigger Handlers ---
     def on_hardware_vision_event(self, trough_id):
+        if not (0 <= trough_id < 2): return
         with self.lock:
             if not self.is_counting: return
             self.in_flight[trough_id] += 1
@@ -717,6 +880,7 @@ class CurationEngine:
         self._broadcast()
 
     def on_hardware_tof_event(self, trough_id):
+        if not (0 <= trough_id < 2): return
         with self.lock:
             if not self.is_counting: return
             if self.gates[trough_id] == 0:
@@ -725,6 +889,7 @@ class CurationEngine:
         self._broadcast()
 
     def on_hardware_ir_event(self, trough_id):
+        if not (0 <= trough_id < 2): return
         with self.lock:
             if not self.is_counting: return
             self.in_flight[trough_id] = max(0, self.in_flight[trough_id] - 1)
@@ -735,7 +900,7 @@ class CurationEngine:
             # Check target reached
             if self.final_count >= self.target:
                 self.is_counting = False
-                self.gates = [1, 1, 1]
+                self.gates = [1, 1]
                 arduino.stop_counting()
                 completed = True
             else:
@@ -762,7 +927,7 @@ class CurationEngine:
                 rem = self.target - self.final_count
                 
                 # Pick trough and quantity (1 or 2 fish)
-                trough_idx = random.randint(0, 2)
+                trough_idx = random.randint(0, 1)
                 # Introduce multi-fish clusters occasionally to test anti-overshoot curation
                 fish_in_lane = 2 if (rem > 1 and random.random() < 0.35) else 1
                 
@@ -797,7 +962,7 @@ class CurationEngine:
 
                 if self.final_count >= self.target:
                     self.is_counting = False
-                    self.gates = [1, 1, 1]
+                    self.gates = [1, 1]
                     completed = True
 
             if completed:
@@ -914,6 +1079,8 @@ class CameraHTTPHandler(BaseHTTPRequestHandler):
                 cam_data = {
                     "running": True,
                     "mode": cam.mode,
+                    "selected_camera": cam.selected_camera,
+                    "cameras": cam.available_cameras,
                     "label": cam.active_label,
                     "color_swap": cam.color_swap,
                     "shutter_mode": cam.shutter_mode,
@@ -964,7 +1131,7 @@ class CameraHTTPHandler(BaseHTTPRequestHandler):
         elif clean_path == "/counting/gate":
             trough = int(payload.get("trough", 1)) - 1
             state = int(payload.get("state", 0)) # 0 = Buyer, 1 = Seller
-            if 0 <= trough <= 2:
+            if 0 <= trough <= 1:
                 curation.gates[trough] = state
                 arduino.set_gate(trough, state)
                 curation._broadcast()
@@ -1001,6 +1168,27 @@ class CameraHTTPHandler(BaseHTTPRequestHandler):
             shutter = payload.get("shutter_mode")
             gain = payload.get("gain")
             res = cam.set_exposure_controls(shutter, gain)
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps(res).encode("utf-8"))
+
+        elif clean_path == "/cameras/scan":
+            cameras = cam.scan_cameras()
+            # If currently in mock mode and a real camera was just found, keep selection up to date
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps({
+                "success": True,
+                "cameras": cameras,
+                "selected_camera": cam.selected_camera,
+                "mode": cam.mode
+            }).encode("utf-8"))
+
+        elif clean_path == "/camera/select":
+            camera_id = payload.get("camera_id")
+            res = cam.select_camera(camera_id)
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.end_headers()

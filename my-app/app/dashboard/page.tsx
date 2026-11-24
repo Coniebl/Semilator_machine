@@ -249,6 +249,7 @@ function DashboardContent() {
   const pricePerPiece = parseFloat(priceStr) || 0;
   const [counted, setCounted] = useState(0);
   const [isRunning, setIsRunning] = useState(false);
+  const [isStoppedEarly, setIsStoppedEarly] = useState(false);
   const total = counted * pricePerPiece;
 
   const [fishName, setFishName] = useState('Fingerlings');
@@ -259,10 +260,11 @@ function DashboardContent() {
 
   // Real-time Hardware & Gate Visualizer State
   const [showGates, setShowGates] = useState(false);
-  const [gates, setGates] = useState<number[]>([1, 1, 1]); // 0 = Closed (Buyer), 1 = Open (Seller Return)
-  const [inFlight, setInFlight] = useState<number[]>([0, 0, 0]);
+  const [gates, setGates] = useState<number[]>([1, 1]); // 0 = Closed (Buyer), 1 = Open (Seller Return)
+  const [inFlight, setInFlight] = useState<number[]>([0, 0]);
   const [hardwareMode, setHardwareMode] = useState<'hardware' | 'simulated'>('simulated');
   const eventSourceRef = useRef<EventSource | null>(null);
+  const fallbackIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const completedRef = useRef(false);
 
   // Listen for realtime setup from the mobile app
@@ -277,6 +279,7 @@ function DashboardContent() {
         if (newFishImage) setFishImage(newFishImage);
         
         setCounted(0);
+        setIsStoppedEarly(false);
         setVerification({ vision: 0, sensor3: 0, thermal: 0, final: 0, show: false });
       })
       .on('broadcast', { event: 'session_ended' }, () => {
@@ -429,7 +432,6 @@ function DashboardContent() {
     }).catch(console.error);
 
     let es: EventSource | null = null;
-    let fallbackInterval: NodeJS.Timeout | null = null;
 
     try {
       es = new EventSource('http://127.0.0.1:5000/counting/stream');
@@ -484,7 +486,7 @@ function DashboardContent() {
           eventSourceRef.current = null;
         }
 
-        if (!fallbackInterval && !completedRef.current) {
+        if (!fallbackIntervalRef.current && !completedRef.current) {
           let currFinal = 0;
           let currV = 0;
           let currTof = 0;
@@ -498,9 +500,12 @@ function DashboardContent() {
             return { ...v, show: true };
           });
 
-          fallbackInterval = setInterval(() => {
+          fallbackIntervalRef.current = setInterval(() => {
             if (completedRef.current) {
-              if (fallbackInterval) clearInterval(fallbackInterval);
+              if (fallbackIntervalRef.current) {
+                clearInterval(fallbackIntervalRef.current);
+                fallbackIntervalRef.current = null;
+              }
               return;
             }
 
@@ -519,13 +524,16 @@ function DashboardContent() {
             });
 
             // Simulate trough lane activity
-            const simulatedLanes = [0, 0, 0];
-            simulatedLanes[Math.floor(Math.random() * 3)] = 1;
+            const simulatedLanes = [0, 0];
+            simulatedLanes[Math.floor(Math.random() * 2)] = 1;
             setInFlight(simulatedLanes);
-            setGates(currFinal >= target ? [1, 1, 1] : [0, 0, 0]);
+            setGates(currFinal >= target ? [1, 1] : [0, 0]);
 
             if (currFinal >= target) {
-              if (fallbackInterval) clearInterval(fallbackInterval);
+              if (fallbackIntervalRef.current) {
+                clearInterval(fallbackIntervalRef.current);
+                fallbackIntervalRef.current = null;
+              }
               recordCompletedTransaction(target);
             }
           }, 320);
@@ -537,22 +545,65 @@ function DashboardContent() {
 
     return () => {
       if (es) es.close();
-      if (fallbackInterval) clearInterval(fallbackInterval);
+      if (fallbackIntervalRef.current) {
+        clearInterval(fallbackIntervalRef.current);
+        fallbackIntervalRef.current = null;
+      }
     };
   }, [isRunning, target, pricePerPiece, buyerId, sellerId, buyerName, fishName, fishImage]);
 
   const handleNewTransaction = () => {
     if (!isRunning && target > 0) {
       setCounted(0);
+      setIsStoppedEarly(false);
       setVerification({ vision: 0, sensor3: 0, thermal: 0, final: 0, show: true });
       setIsRunning(true);
     }
+  };
+
+  const handleEmergencyStop = () => {
+    if (eventSourceRef.current) {
+      eventSourceRef.current.close();
+      eventSourceRef.current = null;
+    }
+    if (fallbackIntervalRef.current) {
+      clearInterval(fallbackIntervalRef.current);
+      fallbackIntervalRef.current = null;
+    }
+    fetch('/api/counting', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'stop' }),
+    }).catch(console.error);
+
+    setIsRunning(false);
+    setGates([1, 1]);
+    setInFlight([0, 0]);
+    setIsStoppedEarly(true);
+  };
+
+  const handleSavePartial = () => {
+    if (counted <= 0) return;
+    setIsStoppedEarly(false);
+    recordCompletedTransaction(counted);
+  };
+
+  const handleDiscardPartial = () => {
+    setIsStoppedEarly(false);
+    setCounted(0);
+    setVerification({ vision: 0, sensor3: 0, thermal: 0, final: 0, show: false });
+    setGates([1, 1]);
+    setInFlight([0, 0]);
   };
 
   const handleClear = () => {
     if (eventSourceRef.current) {
       eventSourceRef.current.close();
       eventSourceRef.current = null;
+    }
+    if (fallbackIntervalRef.current) {
+      clearInterval(fallbackIntervalRef.current);
+      fallbackIntervalRef.current = null;
     }
     fetch('/api/counting', {
       method: 'POST',
@@ -563,13 +614,29 @@ function DashboardContent() {
     setCounted(0);
     setVerification({ vision: 0, sensor3: 0, thermal: 0, final: 0, show: false });
     setIsRunning(false);
+    setIsStoppedEarly(false);
     setTargetStr('');
     setPriceStr('');
-    setGates([1, 1, 1]);
-    setInFlight([0, 0, 0]);
+    setGates([1, 1]);
+    setInFlight([0, 0]);
   };
 
   const handleDone = () => {
+    if (isRunning) {
+      if (eventSourceRef.current) {
+        eventSourceRef.current.close();
+        eventSourceRef.current = null;
+      }
+      if (fallbackIntervalRef.current) {
+        clearInterval(fallbackIntervalRef.current);
+        fallbackIntervalRef.current = null;
+      }
+      fetch('/api/counting', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'stop' }),
+      }).catch(console.error);
+    }
     // Return to the landing page for the next customer
     router.replace('/');
   };
@@ -631,11 +698,11 @@ function DashboardContent() {
           <div className="flex flex-row justify-between items-center mb-1.5">
             <span className="font-bold text-white text-lg">Target:</span>
             <input 
-              className={`font-bold text-white text-lg text-right border border-white rounded px-2 w-24 h-8 ${isRunning ? 'bg-[#9a9794] opacity-80 border-transparent' : 'bg-transparent'}`}
+              className={`font-bold text-white text-lg text-right border border-white rounded px-2 w-24 h-8 ${(isRunning || isStoppedEarly) ? 'bg-[#9a9794] opacity-80 border-transparent' : 'bg-transparent'}`}
               value={targetStr}
               onChange={e => setTargetStr(e.target.value)}
               type="number"
-              disabled={isRunning}
+              disabled={isRunning || isStoppedEarly}
               maxLength={5}
               placeholder="0"
             />
@@ -643,11 +710,11 @@ function DashboardContent() {
           <div className="flex flex-row justify-between items-center mb-1.5">
             <span className="font-bold text-white text-lg">Price per piece:</span>
             <input 
-              className={`font-bold text-white text-lg text-right border border-white rounded px-2 w-24 h-8 ${isRunning ? 'bg-[#9a9794] opacity-80 border-transparent' : 'bg-transparent'}`}
+              className={`font-bold text-white text-lg text-right border border-white rounded px-2 w-24 h-8 ${(isRunning || isStoppedEarly) ? 'bg-[#9a9794] opacity-80 border-transparent' : 'bg-transparent'}`}
               value={priceStr}
               onChange={e => setPriceStr(e.target.value)}
               type="number"
-              disabled={isRunning}
+              disabled={isRunning || isStoppedEarly}
               maxLength={5}
               placeholder="0"
             />
@@ -659,22 +726,52 @@ function DashboardContent() {
           
           <div className="h-[1px] bg-white/60 my-2" />
           
-          <div className="flex flex-row justify-between mt-auto mb-0.5 gap-2.5">
-            <button 
-              className={`bg-[#BA2A23] py-2 rounded-lg flex-1 text-white font-bold text-lg text-center ${isRunning ? 'opacity-50 cursor-not-allowed' : 'hover:bg-[#9a211a]'}`}
-              onClick={handleClear}
-              disabled={isRunning}
-            >
-              Clear
-            </button>
-            <button 
-              className={`bg-[#0EA40E] py-2 rounded-lg flex-1 text-white font-bold text-lg text-center ${isRunning ? 'opacity-70 cursor-not-allowed' : 'hover:bg-[#0b800b]'}`}
-              onClick={handleNewTransaction}
-              disabled={isRunning}
-            >
-              {isRunning ? 'Counting...' : (verification.show ? 'New Transaction' : 'Count')}
-            </button>
-          </div>
+          {isRunning ? (
+            <div className="flex flex-row justify-between mt-auto mb-0.5">
+              <button
+                className="bg-[#DC2626] hover:bg-[#b91c1c] active:scale-95 py-2 rounded-lg flex-1 text-white font-bold text-lg text-center border-2 border-red-300 shadow-lg transition-all"
+                onClick={handleEmergencyStop}
+              >
+                EMERGENCY STOP
+              </button>
+            </div>
+          ) : isStoppedEarly ? (
+            <div className="flex flex-col mt-auto mb-0.5 gap-1.5">
+              <div className="bg-[#BA2A23]/90 text-white text-xs font-bold text-center py-1 px-2 rounded">
+                Stopped early at {counted} / {target}
+              </div>
+              <div className="flex flex-row justify-between gap-2.5">
+                <button
+                  className="bg-[#BA2A23] hover:bg-[#9a211a] py-2 rounded-lg flex-1 text-white font-bold text-base text-center transition-colors"
+                  onClick={handleDiscardPartial}
+                >
+                  Discard
+                </button>
+                <button
+                  className={`bg-[#0EA40E] py-2 rounded-lg flex-1 text-white font-bold text-base text-center transition-colors ${counted <= 0 ? 'opacity-50 cursor-not-allowed' : 'hover:bg-[#0b800b]'}`}
+                  onClick={handleSavePartial}
+                  disabled={counted <= 0}
+                >
+                  Save Partial ({counted})
+                </button>
+              </div>
+            </div>
+          ) : (
+            <div className="flex flex-row justify-between mt-auto mb-0.5 gap-2.5">
+              <button 
+                className="bg-[#BA2A23] hover:bg-[#9a211a] py-2 rounded-lg flex-1 text-white font-bold text-lg text-center"
+                onClick={handleClear}
+              >
+                Clear
+              </button>
+              <button 
+                className="bg-[#0EA40E] hover:bg-[#0b800b] py-2 rounded-lg flex-1 text-white font-bold text-lg text-center"
+                onClick={handleNewTransaction}
+              >
+                {verification.show ? 'New Transaction' : 'Count'}
+              </button>
+            </div>
+          )}
         </div>
 
         {/* Right Column: Verification Details + History */}
@@ -686,7 +783,7 @@ function DashboardContent() {
               <button
                 onClick={() => setShowGates(!showGates)}
                 className="text-xs bg-white/20 hover:bg-white/30 active:bg-white/40 text-white font-bold px-2 py-0.5 rounded transition-colors flex items-center gap-1"
-                title="Toggle 3-Trough Gates & Lanes"
+                title="Toggle 2-Trough Gates & Lanes"
               >
                 <span>{showGates ? '▲ Hide Gates' : '▼ Show Gates'}</span>
               </button>
@@ -715,13 +812,13 @@ function DashboardContent() {
           {showGates && (
             <div className="bg-[#787471] rounded-xl px-3 py-2 flex flex-col shrink-0 text-white transition-all shadow-inner">
               <div className="flex flex-row justify-between items-center mb-1">
-                <span className="text-xs font-bold text-white/90">3 TROUGHS & TRAPDOORS</span>
+                <span className="text-xs font-bold text-white/90">2 TROUGHS & TRAPDOORS</span>
                 <span className="text-[10px] font-bold px-2 py-0.5 rounded bg-black/30 text-white/90">
                   {hardwareMode === 'hardware' ? '🟢 Arduino Serial' : '🟡 Water-Flow Simulator'}
                 </span>
               </div>
               <div className="flex flex-row gap-2">
-                {[0, 1, 2].map((idx) => {
+                {[0, 1].map((idx) => {
                   const isClosedToBuyer = gates[idx] === 0;
                   const inLane = inFlight[idx] || 0;
                   return (

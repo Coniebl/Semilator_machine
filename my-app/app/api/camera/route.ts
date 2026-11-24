@@ -3,6 +3,8 @@ import path from "path";
 import { NextResponse } from "next/server";
 
 let cameraChildProcess: any = null;
+let lastSpawnAttempt = 0;
+const SPAWN_COOLDOWN_MS = 10_000;
 
 async function getCameraStatus(): Promise<any> {
   try {
@@ -18,6 +20,15 @@ async function getCameraStatus(): Promise<any> {
 }
 
 function startCameraDaemon(): void {
+  const now = Date.now();
+  if (now - lastSpawnAttempt < SPAWN_COOLDOWN_MS) {
+    return;
+  }
+  if (cameraChildProcess && cameraChildProcess.exitCode === null && !cameraChildProcess.killed) {
+    return;
+  }
+  lastSpawnAttempt = now;
+
   if (process.platform === "linux") {
     try {
       exec("sudo systemctl start camera.service 2>/dev/null || systemctl start camera.service 2>/dev/null");
@@ -28,11 +39,22 @@ function startCameraDaemon(): void {
     const scriptPath = path.resolve(process.cwd(), "..", "camera_service.py");
     const pythonCmd = process.platform === "win32" ? "python" : "python3";
 
-    cameraChildProcess = spawn(pythonCmd, [scriptPath], {
+    const child = spawn(pythonCmd, [scriptPath], {
       detached: true,
       stdio: "ignore",
     });
-    cameraChildProcess.unref();
+    child.on("exit", () => {
+      if (cameraChildProcess === child) {
+        cameraChildProcess = null;
+      }
+    });
+    child.on("error", () => {
+      if (cameraChildProcess === child) {
+        cameraChildProcess = null;
+      }
+    });
+    child.unref();
+    cameraChildProcess = child;
   } catch (err) {
     console.warn("[CAMERA API] Spawn error:", err);
   }
@@ -119,6 +141,41 @@ export async function POST(req: Request) {
       } catch (err: any) {
         return NextResponse.json(
           { success: false, error: `Color toggle failed: ${err.message}` },
+          { status: 502 }
+        );
+      }
+    }
+
+    if (action === "scan_cameras") {
+      try {
+        const res = await fetch("http://127.0.0.1:5000/cameras/scan", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          signal: AbortSignal.timeout(10000),
+        });
+        const data = await res.json();
+        return NextResponse.json(data);
+      } catch (err: any) {
+        return NextResponse.json(
+          { success: false, error: `Camera scan failed: ${err.message}` },
+          { status: 502 }
+        );
+      }
+    }
+
+    if (action === "select_camera") {
+      try {
+        const res = await fetch("http://127.0.0.1:5000/camera/select", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ camera_id: body.camera_id }),
+          signal: AbortSignal.timeout(8000),
+        });
+        const data = await res.json();
+        return NextResponse.json(data);
+      } catch (err: any) {
+        return NextResponse.json(
+          { success: false, error: `Camera switch failed: ${err.message}` },
           { status: 502 }
         );
       }

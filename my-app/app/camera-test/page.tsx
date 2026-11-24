@@ -11,6 +11,12 @@ export default function CameraTestPage() {
   const [shortDuration, setShortDuration] = useState<number>(10);
   const [serviceStatus, setServiceStatus] = useState<"connecting" | "online">("connecting");
   const [cameraMode, setCameraMode] = useState<string>("detecting");
+  const [availableCameras, setAvailableCameras] = useState<{ id: string; label: string; type: string }[]>([
+    { id: "mock", label: "Simulated (Mock)", type: "mock" },
+  ]);
+  const [selectedCamera, setSelectedCamera] = useState<string>("mock");
+  const [isScanningCameras, setIsScanningCameras] = useState<boolean>(false);
+  const [isSwitchingCamera, setIsSwitchingCamera] = useState<boolean>(false);
   const [colorSwap, setColorSwap] = useState<boolean>(true);
 
   // Motion freeze & Exposure state
@@ -66,7 +72,7 @@ export default function CameraTestPage() {
           const isRec = Boolean(data.recording_active);
 
           if (wasRecordingRef.current && !isRec && data.last_saved) {
-            showFeedback(`🎬 Video saved: ${data.last_saved}`, "success");
+            showFeedback(`Video saved: ${data.last_saved}`, "success");
           }
           wasRecordingRef.current = isRec;
 
@@ -81,6 +87,8 @@ export default function CameraTestPage() {
           if (data.gain !== undefined) setGainLevel(data.gain);
           if (data.last_saved) setLastSaved(data.last_saved);
           if (data.mode) setCameraMode(data.mode);
+          if (Array.isArray(data.cameras) && data.cameras.length > 0) setAvailableCameras(data.cameras);
+          if (data.selected_camera) setSelectedCamera(data.selected_camera);
           return true;
         }
       }
@@ -89,20 +97,29 @@ export default function CameraTestPage() {
   };
 
   useEffect(() => {
-    let interval: NodeJS.Timeout;
+    let cancelled = false;
+    let timer: NodeJS.Timeout;
 
-    // Auto-ping camera service
+    // Auto-ping camera service once on mount
     fetch("/api/camera", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ action: "start" }),
     }).catch(() => {});
 
-    pingService();
-    interval = setInterval(pingService, 400);
+    const poll = async () => {
+      if (cancelled) return;
+      await pingService();
+      if (!cancelled) {
+        timer = setTimeout(poll, wasRecordingRef.current ? 500 : 1500);
+      }
+    };
+
+    poll();
 
     return () => {
-      clearInterval(interval);
+      cancelled = true;
+      clearTimeout(timer);
     };
   }, []);
 
@@ -129,7 +146,7 @@ export default function CameraTestPage() {
         setRecordingMode("continuous");
         setRecordingDuration(0);
         setRecordingElapsed(0);
-        showFeedback("🔴 Recording started — tap Stop whenever you are done!", "info");
+        showFeedback("Recording started — tap Stop whenever you are done!", "info");
       } else {
         showFeedback(data.error || "Failed to start recording", "error");
       }
@@ -157,7 +174,7 @@ export default function CameraTestPage() {
         setRecordingDuration(shortDuration);
         setRecordingElapsed(0);
         setRecordingRemaining(shortDuration);
-        showFeedback(`⏱️ Recording ${shortDuration}s short video clip!`, "info");
+        showFeedback(`Recording ${shortDuration}s short video clip!`, "info");
       } else {
         showFeedback(data.error || "Failed to start short video", "error");
       }
@@ -185,8 +202,8 @@ export default function CameraTestPage() {
       if (data.filename) setLastSaved(data.filename);
       showFeedback(
         data.filename
-          ? `🎬 Video saved (${data.duration_recorded ?? 0}s): ${data.filename}`
-          : "⏹ Video recording stopped & saved",
+          ? `Video saved (${data.duration_recorded ?? 0}s): ${data.filename}`
+          : "Video recording stopped & saved",
         "success"
       );
     } catch {
@@ -206,10 +223,65 @@ export default function CameraTestPage() {
       const data = await res.json();
       if (data.success) {
         setColorSwap(data.color_swap);
-        showFeedback(data.color_swap ? "🎨 Color Swap ON (BGR ↔ RGB)" : "🎨 Color Swap OFF (Native)", "info");
+        showFeedback(data.color_swap ? "Color Swap ON (BGR / RGB)" : "Color Swap OFF (Native)", "info");
       }
     } catch {
       showFeedback("Color toggle error", "error");
+    }
+  };
+
+  const handleScanCameras = async () => {
+    if (isScanningCameras || recordingActive) return;
+    setIsScanningCameras(true);
+    try {
+      const res = await fetch("/api/camera", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "scan_cameras" }),
+      });
+      const data = await res.json();
+      if (data.success && Array.isArray(data.cameras)) {
+        setAvailableCameras(data.cameras);
+        if (data.selected_camera) setSelectedCamera(data.selected_camera);
+        if (data.mode) setCameraMode(data.mode);
+        const realCount = data.cameras.filter((c: { type: string }) => c.type !== "mock").length;
+        showFeedback(
+          realCount > 0 ? `Found ${realCount} camera${realCount > 1 ? "s" : ""}` : "No physical cameras detected",
+          realCount > 0 ? "success" : "info"
+        );
+      } else {
+        showFeedback(data.error || "Camera scan failed", "error");
+      }
+    } catch {
+      showFeedback("Camera scan error", "error");
+    } finally {
+      setIsScanningCameras(false);
+    }
+  };
+
+  const handleSelectCamera = async (cameraId: string) => {
+    if (isSwitchingCamera || recordingActive || cameraId === selectedCamera) return;
+    setIsSwitchingCamera(true);
+    try {
+      const res = await fetch("/api/camera", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "select_camera", camera_id: cameraId }),
+      });
+      const data = await res.json();
+      if (data.success) {
+        setSelectedCamera(data.selected_camera || cameraId);
+        if (data.mode) setCameraMode(data.mode);
+        if (Array.isArray(data.cameras) && data.cameras.length > 0) setAvailableCameras(data.cameras);
+        const picked = availableCameras.find((c) => c.id === cameraId);
+        showFeedback(`Switched to ${picked?.label || cameraId}`, "success");
+      } else {
+        showFeedback(data.error || "Failed to switch camera", "error");
+      }
+    } catch {
+      showFeedback("Camera switch error", "error");
+    } finally {
+      setIsSwitchingCamera(false);
     }
   };
 
@@ -224,8 +296,8 @@ export default function CameraTestPage() {
       });
       const data = await res.json();
       if (data.success) {
-        if (newShutter === "fast_500") showFeedback(`⚡ Fast Motion: 1/500s (Gain ${newGain}x)`, "info");
-        else if (newShutter === "ultra_1000") showFeedback(`⚡⚡ Ultra Freeze: 1/1000s (Gain ${newGain}x)`, "info");
+        if (newShutter === "fast_500") showFeedback(`Fast Motion: 1/500s (Gain ${newGain}x)`, "info");
+        else if (newShutter === "ultra_1000") showFeedback(`Ultra Freeze: 1/1000s (Gain ${newGain}x)`, "info");
         else showFeedback(`Auto Exposure (AEC/AGC) Active`, "info");
       }
     } catch {
@@ -246,10 +318,10 @@ export default function CameraTestPage() {
   };
 
   const categories = [
-    { id: "fingerlings", label: "🐟 Fingerlings" },
-    { id: "empty_background", label: "⬜ Empty / Background" },
-    { id: "dense_flow", label: "🌊 High Density" },
-    { id: "debris", label: "🌿 Debris / Bubbles" },
+    { id: "fingerlings", label: "Fingerlings" },
+    { id: "empty_background", label: "Empty / Background" },
+    { id: "dense_flow", label: "High Density" },
+    { id: "debris", label: "Debris / Bubbles" },
   ];
 
   const shortDurationOptions = [10, 12, 15];
@@ -309,6 +381,31 @@ export default function CameraTestPage() {
         </div>
 
         <div className="flex items-center gap-2">
+          {/* Camera Source Selector */}
+          <div className="flex items-center gap-1 bg-[#1e2022] border border-white/15 rounded-lg px-2 py-0.5">
+            <span className="text-[10px] text-gray-400 font-bold uppercase">Camera:</span>
+            <select
+              value={selectedCamera}
+              disabled={serviceStatus !== "online" || recordingActive || isSwitchingCamera}
+              onChange={(e) => handleSelectCamera(e.target.value)}
+              className="bg-transparent text-white text-[11px] font-bold focus:outline-none cursor-pointer disabled:opacity-50"
+            >
+              {availableCameras.map((cam) => (
+                <option key={cam.id} value={cam.id} className="bg-[#2d3035] text-white">
+                  {cam.label}
+                </option>
+              ))}
+            </select>
+            <button
+              onClick={handleScanCameras}
+              disabled={serviceStatus !== "online" || recordingActive || isScanningCameras}
+              className="ml-1 bg-[#3e434a] hover:bg-[#4e555e] text-gray-200 font-bold px-2 py-0.5 rounded text-[10px] transition-colors active:scale-95 disabled:opacity-50"
+              title="Rescan connected cameras"
+            >
+              {isScanningCameras ? "Scanning..." : "Rescan"}
+            </button>
+          </div>
+
           {/* Live Color Flip Toggle Button */}
           <button
             onClick={handleToggleColor}
@@ -319,7 +416,7 @@ export default function CameraTestPage() {
             }`}
             title="Tap to swap Red and Blue channels if colors look inverted"
           >
-            <span>🎨 Color Swap:</span>
+            <span>Color Swap:</span>
             <span className="font-mono">{colorSwap ? "ON" : "OFF"}</span>
           </button>
 
@@ -328,7 +425,7 @@ export default function CameraTestPage() {
             disabled={isExiting}
             className="bg-red-600 hover:bg-red-700 text-white font-bold px-3 py-1 rounded-lg text-[11px] transition-colors shadow flex items-center gap-1 active:scale-95"
           >
-            {isExiting ? "Exiting..." : "❌ Exit Kiosk"}
+            {isExiting ? "Exiting..." : "Exit Kiosk"}
           </button>
         </div>
       </div>
@@ -357,7 +454,7 @@ export default function CameraTestPage() {
                 onClick={() => pingService()}
                 className="mt-1 bg-[#3e434a] hover:bg-[#4e555e] text-white text-[10px] font-bold px-2.5 py-1 rounded-lg border border-white/20 active:scale-95"
               >
-                🔄 Retry Connection
+                Retry Connection
               </button>
             </div>
           )}
@@ -381,7 +478,7 @@ export default function CameraTestPage() {
                   onClick={handleStopRecording}
                   className="bg-red-600 hover:bg-red-700 text-white text-[10px] px-2.5 py-0.5 rounded font-bold active:scale-95"
                 >
-                  ⏹ Stop & Save
+                  Stop & Save
                 </button>
               </div>
               {recordingMode === "timed" ? (
@@ -411,11 +508,8 @@ export default function CameraTestPage() {
               </strong>{" "}
               ({gainLevel}x)
             </span>
-            <span className="text-right text-gray-300 flex items-center gap-1">
-              <span className="text-green-400 font-bold">🎬</span>
-              <span>
-                Videos: <strong className="text-yellow-400 font-mono">{sessionCount}</strong>
-              </span>
+            <span className="text-right text-gray-300">
+              Videos: <strong className="text-yellow-400 font-mono">{sessionCount}</strong>
             </span>
           </div>
         </div>
@@ -486,7 +580,7 @@ export default function CameraTestPage() {
                     : "bg-[#3e434a] text-gray-300 hover:bg-[#4a5058]"
                 }`}
               >
-                <span>⚡ 1/500s</span>
+                <span>1/500s</span>
                 <span className="text-[8px] font-normal opacity-80">Fast Hands</span>
               </button>
 
@@ -498,7 +592,7 @@ export default function CameraTestPage() {
                     : "bg-[#3e434a] text-gray-300 hover:bg-[#4a5058]"
                 }`}
               >
-                <span>⚡⚡ 1/1000s</span>
+                <span>1/1000s</span>
                 <span className="text-[8px] font-normal opacity-80">Fast Fry/Fish</span>
               </button>
             </div>
@@ -543,7 +637,7 @@ export default function CameraTestPage() {
                       : "bg-[#3e434a] text-gray-200 hover:bg-[#4a5058]"
                   } ${recordingActive ? "opacity-60 cursor-not-allowed" : ""}`}
                 >
-                  <span>⏱️</span> {sec} Secs
+                  {sec} Secs
                 </button>
               ))}
             </div>
@@ -560,7 +654,6 @@ export default function CameraTestPage() {
                 className="w-full bg-red-600 hover:bg-red-700 text-white font-bold py-3 px-2 rounded-xl text-sm shadow-lg flex flex-col items-center justify-center gap-0.5 transition-all active:scale-95 border border-red-400"
               >
                 <div className="flex items-center gap-1.5 font-bold">
-                  <span className="w-2.5 h-2.5 bg-white rounded-sm inline-block" />
                   <span>STOP & SAVE VIDEO</span>
                 </div>
                 <span className="text-[10px] text-red-100 font-mono">
@@ -581,10 +674,7 @@ export default function CameraTestPage() {
                       : "bg-gray-600 text-gray-400 cursor-not-allowed"
                   }`}
                 >
-                  <div className="flex items-center gap-1 font-bold">
-                    <span>🎥</span>
-                    <span>RECORD VIDEO</span>
-                  </div>
+                  <span className="font-bold">RECORD VIDEO</span>
                   <span className="text-[8px] text-green-200 font-normal truncate">
                     (As long as you want)
                   </span>
@@ -600,10 +690,7 @@ export default function CameraTestPage() {
                       : "bg-gray-600 text-gray-400 cursor-not-allowed"
                   }`}
                 >
-                  <div className="flex items-center gap-1 font-bold">
-                    <span>⏱️</span>
-                    <span>SHORT ({shortDuration}s)</span>
-                  </div>
+                  <span className="font-bold">SHORT ({shortDuration}s)</span>
                   <span className="text-[8px] text-amber-200 font-normal truncate">
                     (Auto-stops at {shortDuration}s)
                   </span>

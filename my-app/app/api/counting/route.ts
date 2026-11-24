@@ -61,8 +61,8 @@ export async function GET() {
     tof: 0,
     ir: 0,
     final: 0,
-    gates: [1, 1, 1],
-    in_flight: [0, 0, 0]
+    gates: [1, 1],
+    in_flight: [0, 0]
   });
 }
 
